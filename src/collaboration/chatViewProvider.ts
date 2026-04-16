@@ -110,19 +110,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    private getLineRef() {
+    private async getLineRef() {
         const editor = vscode.window.activeTextEditor;
         if (editor === undefined) { return; }
 
-        const filePath = parseUri(editor.document.uri).pathParts.join('/');
+        const filePath = editor.document.uri.scheme===ROOT_NAME
+            ? parseUri(editor.document.uri).pathParts.join('/')
+            : (await LocalReplicaSCMProvider.uriToPath(editor.document.uri))?.slice(1) || '';
+        if (filePath==='') { return; }
         const start = editor.selection.start, end = editor.selection.end;
         const ref = `[[${filePath}#L${start.line}C${start.character}-L${end.line}C${end.character}]]`;
         return ref;
     }
 
     private async showLineRef(path:string, range:vscode.Range) {
-        const uri = (vscode.workspace.workspaceFolders?.[0].uri.scheme===ROOT_NAME) ?
-                    this.vfs.pathToUri(path) : await LocalReplicaSCMProvider.pathToUri(path);
+        const uri = await LocalReplicaSCMProvider.pathToUri(path) ?? this.vfs.pathToUri(path);
         if (uri === undefined) { return; }
 
         vscode.window.showTextDocument(uri).then(editor => {
@@ -134,12 +136,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     get triggers() {
         return [
             // register commands
-            vscode.commands.registerCommand(`${ROOT_NAME}.collaboration.copyLineRef`, () => {
-                const ref = this.getLineRef();
+            vscode.commands.registerCommand(`${ROOT_NAME}.collaboration.copyLineRef`, async () => {
+                const ref = await this.getLineRef();
                 ref && vscode.env.clipboard.writeText(ref);
             }),
-            vscode.commands.registerCommand(`${ROOT_NAME}.collaboration.insertLineRef`, () => {
-                const ref = this.getLineRef();
+            vscode.commands.registerCommand(`${ROOT_NAME}.collaboration.insertLineRef`, async () => {
+                const ref = await this.getLineRef();
                 ref && this.insertText(ref + ' ');
             }),
             // register chat webview

@@ -4,6 +4,7 @@ import { SnippetItemSchema } from '../api/base';
 import { fuzzyFilter, IntellisenseProvider } from '.';
 import { RemoteFileSystemProvider, VirtualFileSystem, parseUri } from '../core/remoteFileSystemProvider';
 import { TexDocumentSymbolProvider } from './texDocumentSymbolProvider';
+import { isSupportedReplicaDocument, toVirtualUri } from '../utils/localReplicaWorkspace';
 
 type SnippetItemMap = {[K:string]: SnippetItemSchema};
 type FilePathCompletionType = 'text' | 'image' | 'bib';
@@ -35,7 +36,9 @@ export class CommandCompletionProvider extends IntellisenseProvider implements v
     }
 
     private async loadMetadata(uri: vscode.Uri): Promise<SnippetItemMap> {
-        const vfs = await this.vfsm.prefetch(uri);
+        const vfsUri = await toVirtualUri(uri);
+        if (!vfsUri) { return {}; }
+        const vfs = await this.vfsm.prefetch(vfsUri);
         const res = await vfs.metadata();
         if (res===undefined) { return {}; };
 
@@ -53,9 +56,11 @@ export class CommandCompletionProvider extends IntellisenseProvider implements v
     }
 
     private async loadCommands(uri: vscode.Uri): Promise<SnippetItemMap> {
+        const vfsUri = await toVirtualUri(uri);
+        if (!vfsUri) { return {}; }
         const regex = /\\(?:newcommand|renewcommand)\{\\(\w+)\}(\[(\d)\])?(\[(\d)\])?/g;
-        const vfs = await this.vfsm.prefetch(uri);
-        const content = new TextDecoder().decode( await vfs.openFile(uri) );
+        const vfs = await this.vfsm.prefetch(vfsUri);
+        const content = new TextDecoder().decode( await vfs.openFile(vfsUri) );
 
         let commands: SnippetItemMap = {};
         let match: RegExpExecArray | null;
@@ -77,7 +82,9 @@ export class CommandCompletionProvider extends IntellisenseProvider implements v
     }
 
     private async reloadCommands(uri: vscode.Uri): Promise<Map<string, SnippetItemMap>> {
-        const vfs = await this.vfsm.prefetch(uri);
+        const vfsUri = await toVirtualUri(uri);
+        if (!vfsUri) { return new Map(); }
+        const vfs = await this.vfsm.prefetch(vfsUri);
         const rootFiles = await vfs.list(vfs.pathToUri('/'));
 
         let commands: Map<string, SnippetItemMap> = new Map();
@@ -100,7 +107,9 @@ export class CommandCompletionProvider extends IntellisenseProvider implements v
             }
         }
 
-        const {identifier} = parseUri(uri);
+        const vfsUri = await toVirtualUri(uri);
+        if (!vfsUri) { return; }
+        const {identifier} = parseUri(vfsUri);
         if (this.customData[identifier]===undefined || force) {
             this.customData[identifier] = {
                 metadata: await this.loadMetadata(uri) || {},
@@ -111,7 +120,9 @@ export class CommandCompletionProvider extends IntellisenseProvider implements v
 
     private async getCompletionItems(uri:vscode.Uri, partial:string, wholeRange:vscode.Range): Promise<vscode.CompletionItem[]> {
         await this.load(uri);
-        const {identifier} = parseUri(uri);
+        const vfsUri = await toVirtualUri(uri);
+        if (!vfsUri) { return []; }
+        const {identifier} = parseUri(vfsUri);
 
         let commands:SnippetItemMap = {};
         this.customData[identifier].commands.forEach((item) => {
@@ -135,6 +146,7 @@ export class CommandCompletionProvider extends IntellisenseProvider implements v
     }
 
     provideCompletionItems(document: vscode.TextDocument, position: vscode.Position, token: vscode.CancellationToken, context: vscode.CompletionContext): vscode.ProviderResult<vscode.CompletionItem[]> {
+        if (!isSupportedReplicaDocument(document.uri)) { return []; }
         const wordRange = document.getWordRangeAtPosition(position, this.contextRegex);
         if (wordRange) {
             const partial = document.getText(wordRange);
@@ -147,11 +159,12 @@ export class CommandCompletionProvider extends IntellisenseProvider implements v
 
     get triggers(): vscode.Disposable[] {
         return [
-            vscode.languages.registerCompletionItemProvider(this.selector, this, '\\'),
+            vscode.languages.registerCompletionItemProvider([{scheme: ROOT_NAME}, {scheme: 'file'}], this, '\\'),
             // trigger on document save
             vscode.workspace.onDidSaveTextDocument(async doc => {
-                if (doc.uri.scheme === ROOT_NAME && doc.uri.path.endsWith('.tex')) {
-                    const {identifier} = parseUri(doc.uri);
+                const vfsUri = await toVirtualUri(doc.uri);
+                if (vfsUri?.path.endsWith('.tex')) {
+                    const {identifier} = parseUri(vfsUri);
                     const commands = await this.loadCommands(doc.uri);
                     this.customData[identifier]?.commands.set(doc.uri.path, commands);
                 }
@@ -243,6 +256,7 @@ export class ConstantCompletionProvider extends IntellisenseProvider implements 
     }
 
     provideCompletionItems(document: vscode.TextDocument, position: vscode.Position, token: vscode.CancellationToken, context: vscode.CompletionContext): vscode.ProviderResult<vscode.CompletionItem[]> {
+        if (!isSupportedReplicaDocument(document.uri)) { return []; }
         const wordRange = document.getWordRangeAtPosition(position, this.contextRegex);
         if (wordRange) {
             const match = document.getText(wordRange).match(this.contextRegex);
@@ -256,7 +270,7 @@ export class ConstantCompletionProvider extends IntellisenseProvider implements 
 
     get triggers(): vscode.Disposable[] {
         return [
-            vscode.languages.registerCompletionItemProvider(this.selector, this, '{'),
+            vscode.languages.registerCompletionItemProvider([{scheme: ROOT_NAME}, {scheme: 'file'}], this, '{'),
         ];
     }
 }
@@ -296,6 +310,8 @@ export class FilePathCompletionProvider extends IntellisenseProvider implements 
     }
 
     private async getCompletionItems(uri:vscode.Uri, path: string, type: FilePathCompletionType): Promise<vscode.CompletionItem[]> {
+        const vfsUri = await toVirtualUri(uri);
+        if (!vfsUri) { return []; }
         const matches = path.split(/(.*)\/([^\/]*)/);
         const [parent, child] = (()=>{
             if (matches.length === 1) {
@@ -306,7 +322,7 @@ export class FilePathCompletionProvider extends IntellisenseProvider implements 
         })();
         const _regex = this.fileRegex[type];
 
-        const vfs = await this.vfsm.prefetch(uri);
+        const vfs = await this.vfsm.prefetch(vfsUri);
         const parentUri = vfs.pathToUri( ...parent.split('/') );
         const files = await vfs.list(parentUri);
 
@@ -326,7 +342,9 @@ export class FilePathCompletionProvider extends IntellisenseProvider implements 
     private async getDocumentLinks(uri:vscode.Uri, document: vscode.TextDocument): Promise<vscode.DocumentLink[]> {
         const text = document.getText();
         const regex = new RegExp(this.contextRegex, 'mg');
-        const vfs = await this.vfsm.prefetch(uri);
+        const vfsUri = await toVirtualUri(uri);
+        if (!vfsUri) { return []; }
+        const vfs = await this.vfsm.prefetch(vfsUri);
 
         const links:vscode.DocumentLink[] = [];
         let match: RegExpExecArray | null;
@@ -346,6 +364,7 @@ export class FilePathCompletionProvider extends IntellisenseProvider implements 
     }
 
     provideCompletionItems(document: vscode.TextDocument, position: vscode.Position, token: vscode.CancellationToken, context: vscode.CompletionContext): vscode.ProviderResult<vscode.CompletionItem[]> {
+        if (!isSupportedReplicaDocument(document.uri)) { return []; }
         const wordRange = document.getWordRangeAtPosition(position, this.contextRegex);
         if (wordRange) {
             const match = document.getText(wordRange).match(this.contextRegex);
@@ -356,11 +375,15 @@ export class FilePathCompletionProvider extends IntellisenseProvider implements 
     }
 
     provideDocumentLinks(document: vscode.TextDocument, token: vscode.CancellationToken): vscode.ProviderResult<vscode.DocumentLink[]> {
+        if (!isSupportedReplicaDocument(document.uri)) { return []; }
         return this.getDocumentLinks(document.uri, document);
     }
 
     get triggers(): vscode.Disposable[] {
-        const selector = {...this.selector, pattern: '**/*.{tex,txt}'};
+        const selector = [
+            {scheme: ROOT_NAME, pattern: '**/*.{tex,txt}'},
+            {scheme: 'file', pattern: '**/*.{tex,txt}'},
+        ];
         return [
             // register completion provider
             vscode.languages.registerCompletionItemProvider(selector, this, '{', '/'),
@@ -391,7 +414,9 @@ export class ReferenceCompletionProvider extends IntellisenseProvider implements
     }
 
     private async getCompletionItems(uri:vscode.Uri, idx: number, partial:string): Promise<vscode.CompletionItem[]> {
-        const vfs = await this.vfsm.prefetch(uri);
+        const vfsUri = await toVirtualUri(uri);
+        if (!vfsUri) { return []; }
+        const vfs = await this.vfsm.prefetch(vfsUri);
         switch (idx) {
             case 0: // group 0: reference
                 const res = await vfs.metadata();
@@ -445,6 +470,7 @@ export class ReferenceCompletionProvider extends IntellisenseProvider implements
     }
 
     provideCompletionItems(document: vscode.TextDocument, position: vscode.Position, token: vscode.CancellationToken, context: vscode.CompletionContext): vscode.ProviderResult<vscode.CompletionItem[] | vscode.CompletionList<vscode.CompletionItem>> {
+        if (!isSupportedReplicaDocument(document.uri)) { return []; }
         const wordRange = document.getWordRangeAtPosition(position, this.contextRegex);
         if (wordRange) {
             const match = document.getText(wordRange).match(this.contextRegex);
@@ -456,7 +482,7 @@ export class ReferenceCompletionProvider extends IntellisenseProvider implements
 
     get triggers(): vscode.Disposable[] {
         return [
-            vscode.languages.registerCompletionItemProvider(this.selector, this, '{', ','),
+            vscode.languages.registerCompletionItemProvider([{scheme: ROOT_NAME}, {scheme: 'file'}], this, '{', ','),
         ];
     }
 }

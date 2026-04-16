@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import * as Prettier from "prettier";
 import { prettierPluginLatex } from "@unified-latex/unified-latex-prettier";
 import { IntellisenseProvider } from '.';
+import { isSupportedReplicaDocument } from '../utils/localReplicaWorkspace';
 
 // https://github.com/siefkenj/latex-parser-playground/blob/master/src/async-worker/parsing-worker.ts#L35-L43
 async function prettierFormat(text: string, options: vscode.FormattingOptions ) {
@@ -22,6 +23,7 @@ export class TexDocumentFormatProvider extends IntellisenseProvider implements v
     protected readonly contextPrefix = [];
 
     provideDocumentFormattingEdits(document: vscode.TextDocument, options: vscode.FormattingOptions, token: vscode.CancellationToken): vscode.ProviderResult<vscode.TextEdit[]> {
+        if (!isSupportedReplicaDocument(document.uri)) { return []; }
         const text = document.getText();
         return prettierFormat(text, options).then(formattedText => {
             // Create a TextEdit to replace the entire document text with the formatted text
@@ -31,6 +33,7 @@ export class TexDocumentFormatProvider extends IntellisenseProvider implements v
     }
 
     provideDocumentRangeFormattingEdits(document: vscode.TextDocument, range: vscode.Range, options: vscode.FormattingOptions, token: vscode.CancellationToken): vscode.ProviderResult<vscode.TextEdit[]> {
+        if (!isSupportedReplicaDocument(document.uri)) { return []; }
         const text = document.getText(range);
         return prettierFormat(text, options).then(formattedText => {
             // Create a TextEdit to replace the selected text with the formatted text
@@ -40,9 +43,10 @@ export class TexDocumentFormatProvider extends IntellisenseProvider implements v
     }
 
     get triggers() {
-        const latexSelector = ['latex', 'latex-expl3', 'pweave', 'jlweave', 'rsweave'].map(id => {
-            return {...this.selector, language: id };
-        });
+        const latexSelector = ['latex', 'latex-expl3', 'pweave', 'jlweave', 'rsweave']
+            .flatMap((id) => {
+                return [{scheme:'overleaf-workshop', language:id}, {scheme:'file', language:id}];
+            });
 
         return[
             vscode.languages.registerDocumentFormattingEditProvider(latexSelector, this),

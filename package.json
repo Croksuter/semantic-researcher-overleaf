@@ -381,13 +381,13 @@
       {
         "command": "overleaf-workshop.collaboration.copyLineRef",
         "title": "%commands.collaboration.copyLineRef.title%",
-        "enablement": "editorTextFocus && resourceScheme == overleaf-workshop",
+        "enablement": "editorTextFocus && (resourceScheme == overleaf-workshop || overleaf-workshop.activeReplicaEditor)",
         "category": "%extension.displayName%"
       },
       {
         "command": "overleaf-workshop.collaboration.insertLineRef",
         "title": "%commands.collaboration.insertLineRef.title%",
-        "enablement": "editorTextFocus && resourceScheme == overleaf-workshop",
+        "enablement": "editorTextFocus && (resourceScheme == overleaf-workshop || overleaf-workshop.activeReplicaEditor)",
         "category": "%extension.displayName%"
       },
       {
@@ -426,7 +426,7 @@
         "key": "ctrl+shift+c",
         "mac": "cmd+shift+c",
         "command": "overleaf-workshop.collaboration.copyLineRef",
-        "when": "editorTextFocus && resourceScheme == overleaf-workshop"
+        "when": "editorTextFocus && (resourceScheme == overleaf-workshop || overleaf-workshop.activeReplicaEditor)"
       }
     ],
     "configuration": {
@@ -586,11 +586,11 @@
       "editor/context": [
         {
           "command": "overleaf-workshop.collaboration.copyLineRef",
-          "when": "resourceScheme == overleaf-workshop || overleaf-workshop.activate"
+          "when": "resourceScheme == overleaf-workshop || overleaf-workshop.activeReplicaEditor"
         },
         {
           "command": "overleaf-workshop.collaboration.insertLineRef",
-          "when": "resourceScheme == overleaf-workshop || overleaf-workshop.activate"
+          "when": "resourceScheme == overleaf-workshop || overleaf-workshop.activeReplicaEditor"
         }
       ],
       "view/title": [

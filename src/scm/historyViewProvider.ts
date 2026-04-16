@@ -190,9 +190,6 @@ class HistoryDataProvider implements vscode.TreeDataProvider<HistoryItem>, vscod
 
     provideTextDocumentContent(uri: vscode.Uri, token: vscode.CancellationToken): vscode.ProviderResult<string> {
         const [pathname, version] = [uri.path, uri.query];
-        const _uri = vscode.workspace.workspaceFolders?.[0].uri;
-        if (!_uri) { return Promise.reject(); }
-
         return this.vfs.getFileDiff(pathname, Number(version), Number(version))
         .then(diff => {
             const text = diff?.diff[0]?.u;
@@ -218,9 +215,6 @@ class HistoryDataProvider implements vscode.TreeDataProvider<HistoryItem>, vscod
                 });
                 if (!label) { return; }
 
-                const uri = vscode.workspace.workspaceFolders?.[0].uri;
-                if (!uri) { return; }
-
                 const res = await this.vfs.createLabel(label, item.version);
                 if (res) {
                     this._history?.labels[item.version].push(res);
@@ -233,9 +227,6 @@ class HistoryDataProvider implements vscode.TreeDataProvider<HistoryItem>, vscod
                     { placeHolder: vscode.l10n.t('Select a label to delete') }
                 );
                 if (!label) { return; }
-
-                const uri = vscode.workspace.workspaceFolders?.[0].uri;
-                if (!uri) { return; }
 
                 const version = item.version;
                 const labelId = item.tags?.find(t=>t.comment===label)?.id;
@@ -274,8 +265,6 @@ class HistoryDataProvider implements vscode.TreeDataProvider<HistoryItem>, vscod
                 });
             }),
             vscode.commands.registerCommand(`${ROOT_NAME}.projectHistory.downloadProject`, async (item:HistoryItem) => {
-                const uri = vscode.workspace.workspaceFolders?.[0].uri;
-                if (!uri) { return; }
                 const version = item.version;
                 const content = await this.vfs.downloadProjectArchive(version);
                 const filename = `${this.vfs.projectName}-v${version}.zip`;
@@ -292,9 +281,6 @@ class HistoryDataProvider implements vscode.TreeDataProvider<HistoryItem>, vscod
     }
 
     private async getHistory(before?:number): Promise<HistoryRecord> {
-        const uri = vscode.workspace.workspaceFolders?.[0].uri;
-        if (!uri) { return Promise.reject(); }
-
         if (this._history===undefined) { // first time load
             this._history = {
                 before: undefined,

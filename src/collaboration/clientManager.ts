@@ -137,8 +137,7 @@ export class ClientManager {
         const docPath = this.vfs._resolveById(user.doc_id)?.path;
         if (docPath === undefined) { return; }
 
-        const uri = (vscode.workspace.workspaceFolders?.[0].uri.scheme===ROOT_NAME) ?
-                    this.vfs.pathToUri(docPath) : await LocalReplicaSCMProvider.pathToUri(docPath);
+        const uri = await LocalReplicaSCMProvider.pathToUri(docPath) ?? this.vfs.pathToUri(docPath);
         uri && vscode.window.showTextDocument(uri, {
             selection: new vscode.Selection(user.row, user.column, user.row, user.column),
             preview: false,
@@ -152,8 +151,7 @@ export class ClientManager {
             const docPath = this.vfs._resolveById(user.doc_id)?.path;
             if (docPath === undefined) { return; }
 
-            const uri = (vscode.workspace.workspaceFolders?.[0].uri.scheme===ROOT_NAME) ?
-                        this.vfs.pathToUri(docPath) : await LocalReplicaSCMProvider.pathToUri(docPath);
+            const uri = await LocalReplicaSCMProvider.pathToUri(docPath) ?? this.vfs.pathToUri(docPath);
             const editor = uri && vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === uri.toString());
             const selection = user.selection;
             selection && editor?.setDecorations(selection.decoration, selection.ranges);
@@ -181,8 +179,7 @@ export class ClientManager {
         // remove decoration
         const oldDoc = this.vfs._resolveById(this.onlineUsers[clientId]?.doc_id);
         if (oldDoc && oldDoc.fileEntity._id !== docId && selection) {
-            const oldUri = (vscode.workspace.workspaceFolders?.[0].uri.scheme===ROOT_NAME) ?
-                        this.vfs.pathToUri(oldDoc.path) : await LocalReplicaSCMProvider.pathToUri(oldDoc.path);
+            const oldUri = await LocalReplicaSCMProvider.pathToUri(oldDoc.path) ?? this.vfs.pathToUri(oldDoc.path);
 
             const oldEditor = oldUri && vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === oldUri.toString());
             oldEditor && oldEditor.setDecorations(selection.decoration, []);
@@ -191,8 +188,7 @@ export class ClientManager {
         // update decoration
         const newDoc = this.vfs._resolveById(docId);
         if (newDoc === undefined) { return; }
-        const newUri = (vscode.workspace.workspaceFolders?.[0].uri.scheme===ROOT_NAME) ?
-                    this.vfs.pathToUri(newDoc.path) : await LocalReplicaSCMProvider.pathToUri(newDoc.path);
+        const newUri = await LocalReplicaSCMProvider.pathToUri(newDoc.path) ?? this.vfs.pathToUri(newDoc.path);
         const newEditor = newUri && vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === newUri.toString());
         if (selection===undefined) {
             const length = Object.keys(this.onlineUsers).length;
@@ -227,9 +223,7 @@ export class ClientManager {
     private async removePosition(clientId:string) {
         const doc = this.vfs._resolveById(this.onlineUsers[clientId]?.doc_id);
         if (doc === undefined) { return; }
-        // const uri = this.vfs.pathToUri(doc.path);
-        const uri = (vscode.workspace.workspaceFolders?.[0].uri.scheme===ROOT_NAME) ?
-                    this.vfs.pathToUri(doc.path) : await LocalReplicaSCMProvider.pathToUri(doc.path);
+        const uri = await LocalReplicaSCMProvider.pathToUri(doc.path) ?? this.vfs.pathToUri(doc.path);
 
         const editor = uri && vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === uri.toString());
         // delete decoration

@@ -3,6 +3,7 @@ import { IntellisenseProvider } from '.';
 import { ROOT_NAME } from '../consts';
 import { VirtualFileSystem } from '../core/remoteFileSystemProvider';
 import { EventBus } from '../utils/eventBus';
+import { getActiveReplicaOriginUri, isSupportedReplicaDocument, toVirtualUri } from '../utils/localReplicaWorkspace';
 
 function* sRange(start:number, end:number) {
     for (let i = start; i <= end; i++) {
@@ -13,7 +14,7 @@ function* sRange(start:number, end:number) {
 export class MisspellingCheckProvider extends IntellisenseProvider implements vscode.CodeActionProvider {
     private learnedWords?: Set<string>;
     private suggestionCache: Map<string, string[]> = new Map();
-    private diagnosticCollection = vscode.languages.createDiagnosticCollection(ROOT_NAME);
+    private diagnosticCollection = vscode.languages.createDiagnosticCollection(`${ROOT_NAME}.spell`);
     protected readonly contextPrefix = [];
 
     private splitText(text: string) {
@@ -21,9 +22,11 @@ export class MisspellingCheckProvider extends IntellisenseProvider implements vs
     }
 
     private async check(uri:vscode.Uri, changedText: string) {
+        const vfsUri = await toVirtualUri(uri);
+        if (!vfsUri) { return; }
         // init learned words
         if (this.learnedWords===undefined) {
-            const vfs = await this.vfsm.prefetch(uri);
+            const vfs = await this.vfsm.prefetch(vfsUri);
             const words = vfs.getDictionary();
             this.learnedWords = new Set(words);
         }
@@ -38,8 +41,8 @@ export class MisspellingCheckProvider extends IntellisenseProvider implements vs
         const uniqueWordsArray = [...uniqueWords];
 
         // update suggestion cache and learned words
-        const vfs = await this.vfsm.prefetch(uri);
-        const misspellings = await vfs.spellCheck(uri, uniqueWordsArray);
+        const vfs = await this.vfsm.prefetch(vfsUri);
+        const misspellings = await vfs.spellCheck(vfsUri, uniqueWordsArray);
         if (misspellings) {
             misspellings.forEach(misspelling => {
                 uniqueWords.delete(uniqueWordsArray[misspelling.index]);
@@ -98,6 +101,7 @@ export class MisspellingCheckProvider extends IntellisenseProvider implements vs
     private resetDiagnosticCollection() {
         this.diagnosticCollection.clear();
         vscode.workspace.textDocuments.forEach(async doc => {
+            if (!isSupportedReplicaDocument(doc.uri)) { return; }
             const uri = doc.uri;
             await this.check( uri, doc.getText() );
             this.updateDiagnostics(uri);
@@ -132,7 +136,9 @@ export class MisspellingCheckProvider extends IntellisenseProvider implements vs
     }
 
     learnSpelling(uri:vscode.Uri, word: string) {
-        this.vfsm.prefetch(uri).then(vfs => vfs.spellLearn(word));
+        toVirtualUri(uri).then(vfsUri => {
+            vfsUri && this.vfsm.prefetch(vfsUri).then(vfs => vfs.spellLearn(word));
+        });
         this.learnedWords?.add(word);
         this.suggestionCache.delete(word);
         this.updateDiagnostics(uri);
@@ -159,7 +165,7 @@ export class MisspellingCheckProvider extends IntellisenseProvider implements vs
     }
 
     async spellCheckSettings() {
-        const uri = vscode.workspace.workspaceFolders?.[0].uri;
+        const uri = getActiveReplicaOriginUri() ?? vscode.workspace.workspaceFolders?.[0].uri;
         const vfs = uri && await this.vfsm.prefetch(uri);
         const languages = vfs?.getAllSpellCheckLanguages();
         const currentLanguage = vfs?.getSpellCheckLanguage();
@@ -199,7 +205,7 @@ export class MisspellingCheckProvider extends IntellisenseProvider implements vs
             // the diagnostic collection
             this.diagnosticCollection,
             // the code action provider
-            vscode.languages.registerCodeActionsProvider(this.selector, this),
+            vscode.languages.registerCodeActionsProvider([{scheme: ROOT_NAME}, {scheme: 'file'}], this),
             // register learn spelling command
             vscode.commands.registerCommand('langIntellisense.learnSpelling', (uri: vscode.Uri, word: string) => {
                 this.learnSpelling(uri, word);
@@ -215,7 +221,7 @@ export class MisspellingCheckProvider extends IntellisenseProvider implements vs
             }),
             // update diagnostics on document open
             vscode.workspace.onDidOpenTextDocument(async doc => {
-                if (doc.uri.scheme === ROOT_NAME) {
+                if (isSupportedReplicaDocument(doc.uri)) {
                     const uri = doc.uri;
                     await this.check( uri, doc.getText() );
                     this.updateDiagnostics(uri);
@@ -223,7 +229,7 @@ export class MisspellingCheckProvider extends IntellisenseProvider implements vs
             }),
             // update diagnostics on text changed
             vscode.workspace.onDidChangeTextDocument(async e => {
-                if (e.document.uri.scheme === ROOT_NAME) {
+                if (isSupportedReplicaDocument(e.document.uri)) {
                     const uri = e.document.uri;
                     for (const event of e.contentChanges) {
                         // extract changed text

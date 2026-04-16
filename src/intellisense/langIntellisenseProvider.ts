@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ROOT_NAME } from '../consts';
 import { RemoteFileSystemProvider } from '../core/remoteFileSystemProvider';
+import { getActiveReplicaOriginUri } from '../utils/localReplicaWorkspace';
 
 import { IntellisenseProvider } from '.';
 import { TexDocumentSymbolProvider } from './texDocumentSymbolProvider';
@@ -38,8 +39,12 @@ export class LangIntellisenseProvider {
     }
 
     async activate() {
-        const uri = vscode.workspace.workspaceFolders?.[0].uri;
-        if (uri?.scheme!==ROOT_NAME) { return; }
+        const uri = getActiveReplicaOriginUri() ?? vscode.workspace.workspaceFolders?.[0].uri;
+        if (uri?.scheme!==ROOT_NAME) {
+            this.status.hide();
+            setTimeout(this.activate.bind(this), 200);
+            return;
+        }
 
         const vfs = uri && await this.vfsm.prefetch(uri);
         const languageItem = vfs?.getSpellCheckLanguage();

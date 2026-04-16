@@ -24,7 +24,7 @@ const pdfViewRecord: {
 } = {};
 
 class CompileDiagnosticProvider {
-    private diagnosticCollection = vscode.languages.createDiagnosticCollection(ROOT_NAME);
+    private diagnosticCollection = vscode.languages.createDiagnosticCollection(`${ROOT_NAME}.compile`);
     constructor(private readonly vfsm: RemoteFileSystemProvider) {};
 
     private async getRange(log: ErrorSchema, path: string, vfs: any) {

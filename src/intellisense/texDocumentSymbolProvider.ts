@@ -3,6 +3,7 @@ import { VirtualFileSystem, parseUri } from '../core/remoteFileSystemProvider';
 import { IntellisenseProvider } from '.';
 import { TeXElement, TeXElementType, genTexElements } from './texDocumentParseUtility';
 import { ROOT_NAME } from '../consts';
+import { getActiveReplicaOriginUri, localUriToPath, isSupportedReplicaDocument, toVirtualUri } from '../utils/localReplicaWorkspace';
 
 type TexFileStruct = {
     texElements: TeXElement[],
@@ -190,6 +191,9 @@ class ProjectStructRecord {
     }
 
     getTexFileStruct(document: vscode.TextDocument): TexFileStruct | undefined {
+        if (document.uri.scheme!==ROOT_NAME) {
+            return undefined;
+        }
         const filePath = normalizeProjectPath(parseUri(document.uri).pathParts.join('/'));
         return this.fileRecordMap.get(filePath);
     }
@@ -202,7 +206,10 @@ class ProjectStructRecord {
             const uri = this.vfs.pathToUri(filePath);
             content = new TextDecoder().decode( await this.vfs.openFile(uri) );
         } else {
-            filePath = normalizeProjectPath(parseUri(source.uri).pathParts.join('/'));
+            const relativePath = source.uri.scheme===ROOT_NAME
+                ? parseUri(source.uri).pathParts.join('/')
+                : (await localUriToPath(source.uri))?.slice(1) || '';
+            filePath = normalizeProjectPath(relativePath);
             content = source.getText();
         }
 
@@ -252,19 +259,31 @@ export class TexDocumentSymbolProvider extends IntellisenseProvider implements v
     private projectRecordMap = new Map<string, ProjectStructRecord>();
 
     async provideFoldingRanges(document: vscode.TextDocument, context: vscode.FoldingContext, token: vscode.CancellationToken): Promise<vscode.FoldingRange[]> {
+        if (!isSupportedReplicaDocument(document.uri)) { return []; }
         const environmentRange = getEnvironmentFoldingRange(document);
 
         // Try get fileStruct
-        const {projectName} = parseUri(document.uri);
+        const vfsUri = await toVirtualUri(document.uri);
+        if (!vfsUri) { return environmentRange; }
+        const {projectName} = parseUri(vfsUri);
         let projectRecord = this.projectRecordMap.get(projectName);
-        const fileStruct = projectRecord?.getTexFileStruct(document);
+        if (projectRecord===undefined) {
+            const vfs = await this.vfsm.prefetch(vfsUri);
+            projectRecord = new ProjectStructRecord(vfs);
+            await projectRecord.init();
+            this.projectRecordMap.set(projectName, projectRecord);
+        }
+        const fileStruct = projectRecord.getTexFileStruct(document) ?? await projectRecord.refreshRecord(document);
 
         return environmentRange.concat( fileStruct ? elementsToFoldingRanges(fileStruct.texElements) : [] );
     }
 
     async provideDocumentSymbols(document: vscode.TextDocument): Promise<vscode.DocumentSymbol[]> {
-        const vfs = await this.vfsm.prefetch(document.uri);
-        const {projectName} = parseUri(document.uri);
+        if (!isSupportedReplicaDocument(document.uri)) { return []; }
+        const vfsUri = await toVirtualUri(document.uri);
+        if (!vfsUri) { return []; }
+        const vfs = await this.vfsm.prefetch(vfsUri);
+        const {projectName} = parseUri(vfsUri);
 
         // init project record if not exist
         let projectRecord = this.projectRecordMap.get(projectName);
@@ -280,19 +299,19 @@ export class TexDocumentSymbolProvider extends IntellisenseProvider implements v
     }
 
     get currentBibPathArray(): string[] {
-        // check if supported vfs
         const uri = vscode.window.activeTextEditor?.document.uri;
-        if (uri?.scheme !== ROOT_NAME) { return []; }
+        if (!uri || !isSupportedReplicaDocument(uri)) { return []; }
+        const vfsUri = uri.scheme===ROOT_NAME ? uri : getActiveReplicaOriginUri();
+        if (!vfsUri) { return []; }
         // get bib file paths
-        const {projectName} = parseUri(uri);
+        const {projectName} = parseUri(vfsUri);
         const projectRecord = this.projectRecordMap.get(projectName);
         return projectRecord?.getAllBibFilePaths() ?? [];
     }
 
     get triggers(): vscode.Disposable[] {
-        const latexSelector = ['latex', 'latex-expl3', 'pweave', 'jlweave', 'rsweave'].map((id) => {
-            return {...this.selector, language: id };
-        });
+        const latexSelector = ['latex', 'latex-expl3', 'pweave', 'jlweave', 'rsweave']
+            .flatMap((id) => [{scheme: ROOT_NAME, language: id}, {scheme: 'file', language: id}]);
         return [
             // register symbol provider
             vscode.languages.registerDocumentSymbolProvider(latexSelector, this),
@@ -300,7 +319,9 @@ export class TexDocumentSymbolProvider extends IntellisenseProvider implements v
             vscode.languages.registerFoldingRangeProvider(latexSelector, this),
             // register file change listener
             vscode.workspace.onDidChangeTextDocument(async (e) => {
-                const {projectName} = parseUri(e.document.uri);
+                const vfsUri = await toVirtualUri(e.document.uri);
+                if (!vfsUri) { return; }
+                const {projectName} = parseUri(vfsUri);
                 const projectRecord = this.projectRecordMap.get(projectName);
                 projectRecord?.refreshRecord(e.document);
             }),
