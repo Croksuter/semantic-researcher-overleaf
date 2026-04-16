@@ -5,6 +5,7 @@ import { PdfDocument } from '../core/pdfViewEditorProvider';
 import { LatexParser, ErrorSchema } from './compileLogParser';
 import { EventBus } from '../utils/eventBus';
 import { LocalReplicaSCMProvider } from '../scm/localReplicaSCM';
+import { getActiveReplicaOriginUri, isWithinActiveReplica } from '../utils/localReplicaWorkspace';
 
 // map string level to severity
 const severityMap: Record<string, vscode.DiagnosticSeverity> = {
@@ -140,15 +141,16 @@ export class CompileManager {
     }
 
     static async check(uri?: vscode.Uri) {
-        // check if supported vfs
-        uri = uri || vscode.window.activeTextEditor?.document.uri;
-        uri = uri || vscode.workspace.workspaceFolders?.[0].uri;
-        if (uri?.scheme === ROOT_NAME) {
-            return uri;
+        const candidate = uri ?? vscode.window.activeTextEditor?.document.uri ?? vscode.workspace.workspaceFolders?.[0].uri;
+        if (candidate?.scheme === ROOT_NAME) {
+            return candidate;
+        }
+        if (candidate?.scheme==='file' && isWithinActiveReplica(candidate)) {
+            return getActiveReplicaOriginUri();
         }
         // check if supported local replica
         const localSetting = await LocalReplicaSCMProvider.readSettings();
-        if (localSetting?.uri && localSetting?.enableCompileNPreview===true) {
+        if (localSetting?.uri) {
             return vscode.Uri.parse(localSetting.uri);
         }
         // otherwise return undefined

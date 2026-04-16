@@ -4,6 +4,7 @@ import { ProjectTagsResponseSchema } from '../api/base';
 import { GlobalStateManager } from '../utils/globalStateManager';
 import { VirtualFileSystem, parseUri } from './remoteFileSystemProvider';
 import { LocalReplicaSCMProvider } from '../scm/localReplicaSCM';
+import { setActiveReplicaRoot } from '../utils/localReplicaWorkspace';
 
 class DataItem extends vscode.TreeItem {
     constructor(
@@ -654,22 +655,17 @@ export class ProjectManagerProvider implements vscode.TreeDataProvider<DataItem>
         }
 
         const uri = vscode.Uri.parse(project.uri);
-        const vfs = (await (await vscode.commands.executeCommand('remoteFileSystem.prefetch', uri))) as VirtualFileSystem;
-        await vfs.init();
+        await vscode.commands.executeCommand(`${ROOT_NAME}.remoteFileSystem.activateProject`, uri) as VirtualFileSystem;
 
-        try {
-            const scm = await vscode.commands.executeCommand(
-                `${ROOT_NAME}.projectSCM.newSCMWithOptions`,
-                LocalReplicaSCMProvider,
-                {exactBaseUri: true},
-            ) as LocalReplicaSCMProvider | undefined;
+        const scm = await vscode.commands.executeCommand(
+            `${ROOT_NAME}.projectSCM.newSCMWithOptions`,
+            LocalReplicaSCMProvider,
+            {exactBaseUri: true},
+        ) as LocalReplicaSCMProvider | undefined;
 
-            if (scm) {
-                vscode.commands.executeCommand('vscode.openFolder', scm.baseUri, false);
-                vscode.commands.executeCommand('workbench.view.explorer');
-            }
-        } finally {
-            vfs.dispose();
+        if (scm) {
+            await setActiveReplicaRoot(scm.baseUri, {ensureWorkspaceFolder: true});
+            vscode.commands.executeCommand('workbench.view.explorer');
         }
     }
 

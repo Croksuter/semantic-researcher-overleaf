@@ -60,7 +60,8 @@
   ],
   "activationEvents": [
     "onFileSystem:overleaf-workshop",
-    "workspaceContains:.overleaf/settings.json"
+    "workspaceContains:.overleaf/settings.json",
+    "onStartupFinished"
   ],
   "main": "./out/extension.js",
   "l10n": "./l10n",
@@ -346,30 +347,23 @@
         "category": "%extension.displayName%"
       },
       {
-        "command": "overleaf-workshop.projectSCM.toggleLocalCompilePreview",
-        "title": "%commands.projectSCM.toggleLocalCompilePreview.title%",
-        "icon": "$(open-preview)",
-        "enablement": "overleaf-workshop.activate",
-        "category": "%extension.displayName%"
-      },
-      {
         "command": "overleaf-workshop.compileManager.compile",
         "title": "%commands.compileManager.compile.title%",
         "icon": "$(debug-start)",
-        "enablement": "(resourceScheme == overleaf-workshop || overleaf-workshop.activateCompile) && resourceExtname == .tex",
+        "enablement": "(resourceScheme == overleaf-workshop || overleaf-workshop.activeReplicaCompileEditor) && resourceExtname == .tex",
         "category": "%extension.displayName%"
       },
       {
         "command": "overleaf-workshop.compileManager.viewPdf",
         "title": "%commands.compileManager.viewPdf.title%",
         "icon": "$(open-preview)",
-        "enablement": "(resourceScheme == overleaf-workshop || overleaf-workshop.activateCompile) && resourceExtname == .tex",
+        "enablement": "(resourceScheme == overleaf-workshop || overleaf-workshop.activeReplicaCompileEditor) && resourceExtname == .tex",
         "category": "%extension.displayName%"
       },
       {
         "command": "overleaf-workshop.compileManager.syncCode",
         "title": "%commands.compileManager.syncCode.title%",
-        "enablement": "editorTextFocus && (resourceScheme == overleaf-workshop || overleaf-workshop.activateCompile) && resourceExtname == .tex",
+        "enablement": "editorTextFocus && (resourceScheme == overleaf-workshop || overleaf-workshop.activeReplicaCompileEditor) && resourceExtname == .tex",
         "category": "%extension.displayName%"
       },
       {
@@ -414,19 +408,19 @@
         "key": "ctrl+alt+b",
         "mac": "cmd+alt+b",
         "command": "overleaf-workshop.compileManager.compile",
-        "when": "editorTextFocus && (resourceScheme == overleaf-workshop || overleaf-workshop.activateCompile) && resourceExtname == .tex"
+        "when": "editorTextFocus && (resourceScheme == overleaf-workshop || overleaf-workshop.activeReplicaCompileEditor) && resourceExtname == .tex"
       },
       {
         "key": "ctrl+alt+v",
         "mac": "cmd+alt+v",
         "command": "overleaf-workshop.compileManager.viewPdf",
-        "when": "editorTextFocus && (resourceScheme == overleaf-workshop || overleaf-workshop.activateCompile) && resourceExtname == .tex"
+        "when": "editorTextFocus && (resourceScheme == overleaf-workshop || overleaf-workshop.activeReplicaCompileEditor) && resourceExtname == .tex"
       },
       {
         "key": "ctrl+alt+j",
         "mac": "cmd+alt+j",
         "command": "overleaf-workshop.compileManager.syncCode",
-        "when": "editorTextFocus && (resourceScheme == overleaf-workshop || overleaf-workshop.activateCompile) && resourceExtname == .tex"
+        "when": "editorTextFocus && (resourceScheme == overleaf-workshop || overleaf-workshop.activeReplicaCompileEditor) && resourceExtname == .tex"
       },
       {
         "key": "ctrl+shift+c",
@@ -611,11 +605,6 @@
           "group": "navigation@1"
         },
         {
-          "command": "overleaf-workshop.projectSCM.toggleLocalCompilePreview",
-          "when": "view == overleaf-workshop.projectHistory && overleaf-workshop.activate",
-          "group": "navigation@1.5"
-        },
-        {
           "command": "overleaf-workshop.projectHistory.refresh",
           "when": "view == overleaf-workshop.projectHistory",
           "group": "navigation@2"
@@ -629,12 +618,12 @@
       "editor/title": [
         {
           "command": "overleaf-workshop.compileManager.compile",
-          "when": "(resourceScheme == overleaf-workshop || overleaf-workshop.activateCompile) && resourceExtname == .tex",
+          "when": "(resourceScheme == overleaf-workshop || overleaf-workshop.activeReplicaCompileEditor) && resourceExtname == .tex",
           "group": "navigation@1"
         },
         {
           "command": "overleaf-workshop.compileManager.viewPdf",
-          "when": "(resourceScheme == overleaf-workshop || overleaf-workshop.activateCompile) && resourceExtname == .tex",
+          "when": "(resourceScheme == overleaf-workshop || overleaf-workshop.activeReplicaCompileEditor) && resourceExtname == .tex",
           "group": "navigation@2"
         }
       ],

@@ -3,7 +3,14 @@ import * as DiffMatchPatch from 'diff-match-patch';
 import { minimatch } from 'minimatch';
 import { BaseSCM, CommitItem, SettingItem } from ".";
 import { VirtualFileSystem, parseUri } from '../core/remoteFileSystemProvider';
-import { ROOT_NAME } from '../consts';
+import {
+    getActiveReplicaRoot,
+    isLocalReplicaMetadataUri,
+    localUriToPath,
+    pathToLocalUri,
+    readReplicaSettings,
+} from '../utils/localReplicaWorkspace';
+import { stringifyOverleafUri } from '../utils/overleafUri';
 
 const IGNORE_SETTING_KEY = 'ignore-patterns';
 
@@ -109,51 +116,51 @@ export class LocalReplicaSCMProvider extends BaseSCM {
         return vscode.Uri.joinPath(this.baseUri, '.overleaf/settings.json');
     }
 
+    private get settingsDirectoryUri(): vscode.Uri {
+        return vscode.Uri.joinPath(this.baseUri, '.overleaf');
+    }
+
     private async ensureLocalReplicaSettings() {
+        const canonicalSettings = {
+            'uri': stringifyOverleafUri(this.vfs.origin),
+            'serverName': this.vfs.serverName,
+            'enableCompileNPreview': true,
+            'projectName': this.vfs.projectName,
+        };
+        let shouldPersist = false;
         try {
             const content = await vscode.workspace.fs.readFile(this.settingsUri);
-            this.localReplicaSettings = JSON.parse(new TextDecoder().decode(content));
-        } catch (error) {
+            const storedSettings = JSON.parse(new TextDecoder().decode(content));
             this.localReplicaSettings = {
-                'uri': this.vfs.origin.toString(),
-                'serverName': this.vfs.serverName,
-                'enableCompileNPreview': false,
-                'projectName': this.vfs.projectName,
+                ...canonicalSettings,
             };
+            shouldPersist = JSON.stringify(storedSettings)!==JSON.stringify(this.localReplicaSettings);
+        } catch (error) {
+            this.localReplicaSettings = canonicalSettings;
+            shouldPersist = true;
+        }
+        if (shouldPersist) {
             await this.persistLocalReplicaSettings();
         }
         return this.localReplicaSettings;
     }
 
+    private async hasLocalReplicaSettings() {
+        try {
+            await vscode.workspace.fs.stat(this.settingsUri);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
     private async persistLocalReplicaSettings() {
         if (this.localReplicaSettings===undefined) { return; }
+        await vscode.workspace.fs.createDirectory(this.settingsDirectoryUri);
         await vscode.workspace.fs.writeFile(
             this.settingsUri,
             Buffer.from(JSON.stringify(this.localReplicaSettings, null, 4)),
         );
-    }
-
-    public async setCompilePreviewEnabled(enabled: boolean) {
-        const settings = await this.ensureLocalReplicaSettings();
-        if (settings===undefined) { return; }
-        settings.enableCompileNPreview = enabled;
-        await this.persistLocalReplicaSettings();
-
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
-        if (workspaceRoot?.scheme==='file' && workspaceRoot.toString()===this.baseUri.toString()) {
-            await vscode.commands.executeCommand('setContext', `${ROOT_NAME}.activateCompile`, enabled);
-        }
-
-        vscode.window.showInformationMessage(
-            enabled
-                ? vscode.l10n.t('Compile and PDF preview enabled for this local replica.')
-                : vscode.l10n.t('Compile and PDF preview disabled for this local replica.')
-        );
-    }
-
-    public async toggleCompilePreviewEnabled() {
-        const settings = await this.ensureLocalReplicaSettings();
-        await this.setCompilePreviewEnabled(!(settings?.enableCompileNPreview===true));
     }
 
     public static async validateBaseUri(uri: string, projectName?: string): Promise<vscode.Uri> {
@@ -201,43 +208,15 @@ export class LocalReplicaSCMProvider extends BaseSCM {
     }
 
     public static async pathToUri(path: string): Promise<vscode.Uri | undefined> {
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0].uri;
-        if (workspaceRoot===undefined || workspaceRoot?.scheme!=='file') { return undefined; }
-
-        const settingUri = vscode.Uri.joinPath(workspaceRoot, '.overleaf/settings.json');
-        try {
-            await vscode.workspace.fs.stat(settingUri);
-            return vscode.Uri.joinPath(workspaceRoot, path);
-        } catch (error) {
-            return undefined;
-        }
+        return pathToLocalUri(path);
     }
 
     public static async uriToPath(uri: vscode.Uri): Promise<string | undefined> {
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0].uri;
-        if (workspaceRoot===undefined || workspaceRoot?.scheme!=='file') { return undefined; }
-
-        const settingUri = vscode.Uri.joinPath(workspaceRoot, '.overleaf/settings.json');
-        try {
-            await vscode.workspace.fs.stat(settingUri);
-            return uri.path.slice(workspaceRoot.path.length);
-        } catch (error) {
-            return undefined;
-        }
+        return localUriToPath(uri);
     }
 
-    public static async readSettings(): Promise<any | undefined> {
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0].uri;
-        if (vscode.workspace.workspaceFolders?.length!==1 || workspaceRoot?.scheme!=='file') { return undefined; }
-
-        const settingUri = vscode.Uri.joinPath(workspaceRoot, '.overleaf/settings.json');
-        try {
-            await vscode.workspace.fs.stat(settingUri);
-            const content = await vscode.workspace.fs.readFile(settingUri);
-            return JSON.parse( new TextDecoder().decode(content) );
-        } catch (error) {
-            return undefined;
-        }
+    public static async readSettings(rootUri?: vscode.Uri): Promise<any | undefined> {
+        return readReplicaSettings(rootUri ?? getActiveReplicaRoot());
     }
 
     private matchIgnorePatterns(path: string): boolean {
@@ -311,6 +290,8 @@ export class LocalReplicaSCMProvider extends BaseSCM {
                         continue;
                     }
                     if (type === vscode.FileType.Directory) {
+                        this.setBypassCache(relPath, new Uint8Array(), 'pull');
+                        await vscode.workspace.fs.createDirectory(this.localUri(relPath));
                         queue.push(relPath+'/');
                     } else {
                         files.push([name, relPath]);
@@ -409,11 +390,18 @@ export class LocalReplicaSCMProvider extends BaseSCM {
         const {pathParts} = parseUri(vfsUri);
         pathParts.at(-1)==='' && pathParts.pop(); // remove the last empty string
         const relPath = ('/' + pathParts.join('/'));
-        const localUri = vscode.Uri.joinPath(this.baseUri, relPath);
+        const localUri = this.localUri(relPath);
         this.applySync('pull', type, relPath, vfsUri, localUri);
     }
 
     private async syncToVFS(localUri: vscode.Uri, type: 'update'|'delete') {
+        if (isLocalReplicaMetadataUri(localUri, this.baseUri)) {
+            return;
+        }
+        if (!await this.hasLocalReplicaSettings()) {
+            console.warn(`Local replica settings missing under "${this.baseUri.toString()}"; local change was not propagated.`);
+            return;
+        }
         // get relative path to baseUri
         const basePath = this.baseUri.path;
         const relPath = localUri.path.slice(basePath.length);
@@ -421,17 +409,19 @@ export class LocalReplicaSCMProvider extends BaseSCM {
         this.applySync('push', type, relPath, localUri, vfsUri);
     }
 
-    private async initWatch() {
-        // write ".overleaf/settings.json" if not exist
+    public async initializeLocalReplica() {
         await this.ensureLocalReplicaSettings();
+        await this.overwrite();
+    }
 
+    private async initWatch() {
+        await this.initializeLocalReplica();
         this.vfsWatcher = vscode.workspace.createFileSystemWatcher(
             new vscode.RelativePattern( this.vfs.origin, '**/*' )
         );
         this.localWatcher = vscode.workspace.createFileSystemWatcher(
             new vscode.RelativePattern( this.baseUri.path, '**/*' )
         );
-        await this.overwrite();
 
         return [
             // sync from vfs to local
@@ -445,13 +435,24 @@ export class LocalReplicaSCMProvider extends BaseSCM {
         ];
     }
 
-    writeFile(relPath: string, content: Uint8Array): Thenable<void> {
-        const uri = vscode.Uri.joinPath(this.baseUri, relPath);
+    private localUri(relPath: string): vscode.Uri {
+        return vscode.Uri.joinPath(this.baseUri, relPath.replace(/^\/+/, ''));
+    }
+
+    private async ensureParentDirectory(relPath: string) {
+        const pathParts = relPath.replace(/^\/+/, '').split('/').filter(Boolean);
+        if (pathParts.length<=1) { return; }
+        await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(this.baseUri, ...pathParts.slice(0, -1)));
+    }
+
+    async writeFile(relPath: string, content: Uint8Array): Promise<void> {
+        await this.ensureParentDirectory(relPath);
+        const uri = this.localUri(relPath);
         return vscode.workspace.fs.writeFile(uri, content);
     }
 
     readFile(relPath: string): Thenable<Uint8Array|undefined> {
-        const uri = vscode.Uri.joinPath(this.baseUri, relPath);
+        const uri = this.localUri(relPath);
         return new Promise(async (resolve, reject) => {
             try {
                 const content = await vscode.workspace.fs.readFile(uri);
@@ -515,24 +516,7 @@ export class LocalReplicaSCMProvider extends BaseSCM {
     }
 
     get settingItems(): SettingItem[] {
-        const compilePreviewEnabled = this.localReplicaSettings?.enableCompileNPreview===true;
         return [
-            {
-                label: compilePreviewEnabled
-                    ? vscode.l10n.t('Disable compile & PDF preview in local replica')
-                    : vscode.l10n.t('Enable compile & PDF preview in local replica'),
-                description: compilePreviewEnabled
-                    ? vscode.l10n.t('Currently enabled')
-                    : vscode.l10n.t('Currently disabled'),
-                callback: async () => {
-                    await this.setCompilePreviewEnabled(!compilePreviewEnabled);
-                },
-            },
-            {
-                label: '',
-                kind: vscode.QuickPickItemKind.Separator,
-                callback: async () => {},
-            },
             // configure ignore patterns
             {
                 label: vscode.l10n.t('Configure sync ignore patterns ...'),

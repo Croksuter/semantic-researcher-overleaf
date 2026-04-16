@@ -142,6 +142,19 @@ export class SCMCollectionProvider extends vscode.Disposable {
             && (item.scm.constructor as any).label===scmProto.label
         );
         if (existing) {
+            let activated = false;
+            if (enabled && (!existing.enabled || existing.triggers.length===0)) {
+                const persist = this.vfs.getProjectSCMPersist(existing.scm.scmKey);
+                persist.enabled = true;
+                this.vfs.setProjectSCMPersist(existing.scm.scmKey, persist);
+                existing.enabled = true;
+                existing.triggers = await existing.scm.triggers;
+                activated = true;
+                this.updateStatus();
+            }
+            if (!activated && existing.scm instanceof LocalReplicaSCMProvider) {
+                await existing.scm.initializeLocalReplica();
+            }
             return existing.scm;
         }
 
@@ -270,18 +283,8 @@ export class SCMCollectionProvider extends vscode.Disposable {
         });
     }
 
-    private getLocalReplicaSCM(): LocalReplicaSCMProvider | undefined {
-        const record = this.scms.find(item => item.scm instanceof LocalReplicaSCMProvider);
-        return record?.scm as LocalReplicaSCMProvider | undefined;
-    }
-
-    private async toggleLocalReplicaCompilePreview() {
-        const scm = this.getLocalReplicaSCM();
-        if (!scm) {
-            vscode.window.showWarningMessage(vscode.l10n.t('No local replica is active in the current workspace.'));
-            return;
-        }
-        await scm.toggleCompilePreviewEnabled();
+    private async ensureLocalReplicaSCM(baseUri: vscode.Uri) {
+        return this.createSCM(LocalReplicaSCMProvider, baseUri, true, true);
     }
 
     showSCMConfiguration() {
@@ -342,8 +345,8 @@ export class SCMCollectionProvider extends vscode.Disposable {
             vscode.commands.registerCommand(`${ROOT_NAME}.projectSCM.newSCMWithOptions`, (scmProto, options?: CreateSCMOptions) => {
                 return this.createNewSCM(scmProto, options);
             }),
-            vscode.commands.registerCommand(`${ROOT_NAME}.projectSCM.toggleLocalCompilePreview`, () => {
-                return this.toggleLocalReplicaCompilePreview();
+            vscode.commands.registerCommand(`${ROOT_NAME}.projectSCM.ensureLocalReplicaSCM`, (baseUri: vscode.Uri) => {
+                return this.ensureLocalReplicaSCM(baseUri);
             }),
             this as vscode.Disposable,
         ];

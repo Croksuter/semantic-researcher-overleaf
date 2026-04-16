@@ -9,6 +9,7 @@ import { ClientManager } from '../collaboration/clientManager';
 import { EventBus } from '../utils/eventBus';
 import { SCMCollectionProvider } from '../scm/scmCollectionProvider';
 import { ExtendedBaseAPI, ProjectLinkedFileProvider, UrlLinkedFileProvider } from '../api/extendedBase';
+import { normalizeOverleafQuery, normalizeOverleafUri } from '../utils/overleafUri';
 
 const __OUTPUTS_ID = `${ROOT_NAME}-outputs`;
 
@@ -93,7 +94,9 @@ export class File implements vscode.FileStat {
 }
 
 export function parseUri(uri: vscode.Uri) {
-    const query:any = uri.query.split('&').reduce((acc, v) => {
+    uri = normalizeOverleafUri(uri);
+    const queryString = normalizeOverleafQuery(uri.query);
+    const query:any = queryString.split('&').reduce((acc, v) => {
         const [key,value] = v.split('=');
         return {...acc, [key]:value};
     }, {});
@@ -140,6 +143,7 @@ export class VirtualFileSystem extends vscode.Disposable {
             // this.socket.disconnect();
         });
 
+        uri = normalizeOverleafUri(uri);
         const {userId,projectId,serverName,projectName} = parseUri(uri);
         this.serverName = serverName;
         this.projectName = projectName;
@@ -1221,6 +1225,7 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
     }
 
     private getVFS(uri: vscode.Uri): Promise<VirtualFileSystem> {
+        uri = normalizeOverleafUri(uri);
         const vfs = this.vfss[ uri.query ];
         if (vfs) {
             return Promise.resolve(vfs);
@@ -1233,6 +1238,20 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
 
     prefetch(uri: vscode.Uri): Promise<VirtualFileSystem> {
         return this.getVFS(uri).then((vfs) => {return vfs;});
+    }
+
+    async activateProject(uri: vscode.Uri): Promise<VirtualFileSystem> {
+        uri = normalizeOverleafUri(uri);
+        Object.entries(this.vfss).forEach(([query, vfs]) => {
+            if (query!==uri.query) {
+                vfs.dispose();
+                delete this.vfss[query];
+            }
+        });
+
+        const vfs = await this.prefetch(uri);
+        await vfs.init();
+        return vfs;
     }
 
     notify(events :vscode.FileChangeEvent[]) {
@@ -1292,6 +1311,9 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
             }),
             vscode.commands.registerCommand('remoteFileSystem.prefetch', (uri: vscode.Uri) => {
                 return this.prefetch(uri);
+            }),
+            vscode.commands.registerCommand(`${ROOT_NAME}.remoteFileSystem.activateProject`, (uri: vscode.Uri) => {
+                return this.activateProject(uri);
             }),
         ];
     }
