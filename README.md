@@ -42,6 +42,12 @@ The upstream user guide is available at [GitHub Wiki](https://github.com/overlea
 
   Use `Open Project Locally ...` to create a replica under a parent folder, or `Select Project Folder Locally ...` to use an exact folder as the replica root while keeping the current VS Code window and activating local Overleaf features against that folder.
 
+### How to Login in Browser
+
+Choose **Login in Browser** from the login method list. The extension opens a Chrome, Edge, or Chromium window and navigates to the Overleaf project page, which shows the login page when needed. Sign in there as usual, including Google, SSO, or two-factor authentication. Once Overleaf reaches the project page, the extension reads the browser session cookies and completes the same cookie login flow automatically.
+
+In a local VS Code window, no extra extension is needed. In a VS Code Remote window, install **Semantic Researcher Overleaf Remote Pack** locally so the remote extension can ask your desktop VS Code to open the local browser. For VSIX installs, install the main extension in the remote window and the Remote Pack VSIX in the local desktop VS Code. If the browser is not found automatically, set `overleaf-workshop.auth.browserPath` for the main extension or `semantic-researcher-overleaf-remote-pack.browserPath` for the Remote Pack.
+
 ### How to Login with Cookies
 
 <img src="https://raw.githubusercontent.com/overleaf-workshop/Overleaf-Workshop/master/docs/assets/login_with_cookie.png" height=400px/>

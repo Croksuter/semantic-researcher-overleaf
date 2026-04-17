@@ -5,6 +5,13 @@ import { GlobalStateManager } from '../utils/globalStateManager';
 import { VirtualFileSystem, parseUri } from './remoteFileSystemProvider';
 import { LocalReplicaSCMProvider } from '../scm/localReplicaSCM';
 import { setActiveReplicaRoot } from '../utils/localReplicaWorkspace';
+import { BrowserLogin } from '../auth/browserLogin';
+
+type BrowserLoginResponse = {
+    cookies: string;
+};
+
+const remotePackLoginCommand = 'semantic-researcher-overleaf-remote-pack.login';
 
 class DataItem extends vscode.TreeItem {
     constructor(
@@ -209,8 +216,52 @@ export class ProjectManagerProvider implements vscode.TreeDataProvider<DataItem>
         });
     }
 
+    private async loginInBrowser(server: ServerItem) {
+        const config = vscode.workspace.getConfiguration(ROOT_NAME);
+        const timeoutSeconds = config.get<number>('auth.browserLogin.timeoutSeconds', 600);
+        const browserPath = config.get<string>('auth.browserPath', '');
+        const isRemoteWindow = vscode.env.remoteName!==undefined;
+
+        try {
+            const { cookies } = await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: vscode.l10n.t('Waiting for Overleaf browser login...'),
+                cancellable: !isRemoteWindow,
+            }, (_progress, token) => {
+                if (isRemoteWindow) {
+                    return vscode.commands.executeCommand<BrowserLoginResponse>(remotePackLoginCommand, {
+                        serverName: server.name,
+                        serverUrl: server.api.url,
+                        timeoutSeconds,
+                        browserPath,
+                    });
+                }
+                return BrowserLogin.login(this.context, server.name, server.api.url, token);
+            });
+
+            const success = await GlobalStateManager.loginServer(this.context, server.api, server.name, {cookies});
+            if (success) {
+                this.refresh();
+            } else {
+                vscode.window.showErrorMessage( vscode.l10n.t('Login failed.') );
+            }
+        } catch (error) {
+            if (isRemoteWindow && this.isMissingRemotePackError(error)) {
+                vscode.window.showErrorMessage(vscode.l10n.t('Remote browser login requires the local Overleaf Remote Pack extension. Install it locally, then retry. You can still use Login with Cookies.'));
+            } else {
+                const message = error instanceof Error ? error.message : String(error);
+                vscode.window.showErrorMessage(message);
+            }
+        }
+    }
+
+    private isMissingRemotePackError(error:unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        return message.includes(remotePackLoginCommand) || message.includes('command') || message.includes('not found');
+    }
+
     loginServer(server: ServerItem) {
-        const loginMethods:Record<string, ()=>void> = {
+        const loginMethods:Record<string, ()=>void|Promise<void>> = {
             // eslint-disable-next-line @typescript-eslint/naming-convention
             'Login with Password': () => {
                 vscode.window.showInputBox({'placeHolder': vscode.l10n.t('Email')})
@@ -232,6 +283,8 @@ export class ProjectManagerProvider implements vscode.TreeDataProvider<DataItem>
                     }
                 });
             },
+            // eslint-disable-next-line @typescript-eslint/naming-convention
+            'Login in Browser': () => this.loginInBrowser(server),
             // eslint-disable-next-line @typescript-eslint/naming-convention
             'Login with Cookies': () => {
                 vscode.window.showInputBox({

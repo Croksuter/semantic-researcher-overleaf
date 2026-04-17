@@ -9,10 +9,12 @@ docs/**
 .yarnrc
 commitlint.config.js
 scripts/**
+remote-pack/**
 **/tsconfig.json
 **/.eslintrc.json
 **/*.map
 **/*.ts
+*.vsix
 
 data/vendor/**
 !data/vendor/LICENSE*

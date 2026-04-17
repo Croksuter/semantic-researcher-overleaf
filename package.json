@@ -2,7 +2,7 @@
   "name": "semantic-researcher-overleaf",
   "displayName": "%extension.displayName%",
   "description": "%extension.description%",
-  "version": "0.15.9",
+  "version": "0.15.10",
   "icon": "resources/icons/app_icon.png",
   "author": {
     "name": "iamhyc",
@@ -544,6 +544,20 @@
           "default": true,
           "scope": "machine",
           "markdownDescription": "%configuration.formatWithLineBreak.enabled.markdownDescription%"
+        },
+        "overleaf-workshop.auth.browserPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "%configuration.auth.browserPath.markdownDescription%"
+        },
+        "overleaf-workshop.auth.browserLogin.timeoutSeconds": {
+          "type": "number",
+          "default": 600,
+          "scope": "machine",
+          "minimum": 30,
+          "maximum": 1800,
+          "markdownDescription": "%configuration.auth.browserLogin.timeoutSeconds.markdownDescription%"
         }
       }
     },
@@ -801,6 +815,8 @@
     "postinstall": "patch-package && npm run download-pdfjs && npm run download-latex-basics",
     "vscode:prepublish": "npm run compile",
     "package:vsix": "npx @vscode/vsce package --no-yarn",
+    "compile:remote-pack": "npm --prefix remote-pack run compile",
+    "package:remote-pack": "npm --prefix remote-pack run package:vsix",
     "publish:marketplace": "npx @vscode/vsce publish --no-yarn",
     "update-l10n": "npx @vscode/l10n-dev export -o ./l10n ./src",
     "compile": "tsc -p ./ && cd views/chat-view && npm run build",
@@ -820,6 +836,7 @@
     "mime-types": "^2.1.35",
     "minimatch": "^9.0.9",
     "node-fetch": "^2.7.0",
+    "playwright-core": "1.42.1",
     "prettier": "^3.1.1",
     "socket.io-client": "github:overleaf/socket.io-client#0.9.17-overleaf-5",
     "uuid": "^9.0.1"

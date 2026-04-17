@@ -1,0 +1,59 @@
+{
+  "name": "semantic-researcher-overleaf-remote-pack",
+  "displayName": "Semantic Researcher Overleaf Remote Pack",
+  "description": "Local UI support pack for Semantic Researcher Overleaf in VS Code Remote windows.",
+  "version": "0.15.10",
+  "icon": "resources/icons/app_icon.png",
+  "publisher": "alex6095",
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alex6095/semantic-researcher-overleaf.git",
+    "directory": "remote-pack"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:semantic-researcher-overleaf-remote-pack.login"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "semantic-researcher-overleaf-remote-pack.login",
+        "title": "Overleaf: Remote Browser Login"
+      }
+    ],
+    "configuration": {
+      "title": "Semantic Researcher Overleaf Remote Pack",
+      "properties": {
+        "semantic-researcher-overleaf-remote-pack.browserPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Path to a local Chrome, Edge, or Chromium executable used by the Overleaf Remote Pack. Leave empty to auto-detect."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "package:vsix": "npx @vscode/vsce package --no-yarn"
+  },
+  "dependencies": {
+    "playwright-core": "1.42.1"
+  },
+  "devDependencies": {
+    "@types/node": "20.2.5",
+    "@types/vscode": "1.80.0",
+    "typescript": "5.2.2"
+  },
+  "extensionKind": [
+    "ui"
+  ]
+}
