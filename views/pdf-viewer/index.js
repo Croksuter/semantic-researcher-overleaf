@@ -43,15 +43,20 @@
         pdfSidebarView: SidebarView.NONE,
     };
     let firstLoaded = true;
-	    let citationPreviewOptions = {...CitationPreviewDefaults};
-	    const citationPreviewState = {
-	        annotationCache: new Map(),
-	        textLineCache: new Map(),
-	        activeCluster: null,
-	        activePopover: null,
-	        activeRequestId: 0,
-	        listenersEnabled: false,
-	    };
+    let citationPreviewOptions = {...CitationPreviewDefaults};
+    const citationPreviewState = {
+        annotationCache: new Map(),
+        textLineCache: new Map(),
+        rawTextCache: new Map(),
+        rawItemsCache: new Map(),
+        columnInfoCache: new Map(),
+        referenceEntriesPromise: null,
+        destinationIndexCache: new Map(),
+        activeCluster: null,
+        activePopover: null,
+        activeRequestId: 0,
+        listenersEnabled: false,
+    };
 
     function updatePdfViewerState() {
         const pdfViewerState = vscode.getState() || globalPdfViewerState;
@@ -212,11 +217,16 @@
         invalidateCitationPreviewLayout();
     }
 
-	    function invalidateCitationPreviewLayout() {
-	        closeCitationPopover();
-	        citationPreviewState.annotationCache.clear();
-	        citationPreviewState.textLineCache.clear();
-	    }
+    function invalidateCitationPreviewLayout() {
+        closeCitationPopover();
+        citationPreviewState.annotationCache.clear();
+        citationPreviewState.textLineCache.clear();
+        citationPreviewState.rawTextCache.clear();
+        citationPreviewState.rawItemsCache.clear();
+        citationPreviewState.columnInfoCache.clear();
+        citationPreviewState.referenceEntriesPromise = null;
+        citationPreviewState.destinationIndexCache.clear();
+    }
 
     function updateCitationPreviewOptions(options) {
         if (!options || typeof options !== 'object') {
@@ -606,6 +616,7 @@
                             y: item.y,
                             height: item.height,
                             column: item.column,
+                            pageNumber,
                             text: '',
                         };
                         lines.push(line);
@@ -649,37 +660,622 @@
         return `${pageNumber}:${scale}:${width}:${height}`;
     }
 
-    function referenceStartRegex(number) {
-        const marker = number
-            ? number.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-            : '\\d+';
-        return new RegExp(`^\\s*(?:\\d+\\s+)?(?:\\[\\s*${marker}[A-Za-z]?\\s*\\]|\\(?\\s*${marker}[A-Za-z]?\\s*\\)?[.)])\\s+`);
+    function destinationPosition(destination) {
+        const pageView = PDFViewerApplication.pdfViewer.getPageView(destination.pageNumber - 1);
+        return {
+            pageNumber: destination.pageNumber,
+            column: destination.targetPoint.x < pageView.width / 2 ? 0 : 1,
+            x: destination.targetPoint.x,
+            y: destination.targetPoint.y,
+        };
     }
 
-    function findReferenceStartIndex(lines, targetPoint, labelText) {
-        if (lines.length === 0) {
-            return -1;
+    function linePosition(line) {
+        return {
+            pageNumber: line.pageNumber,
+            column: line.column,
+            x: line.x,
+            y: line.y,
+        };
+    }
+
+    function compareReadingPositions(a, b) {
+        return a.pageNumber - b.pageNumber
+            || a.column - b.column
+            || a.y - b.y
+            || a.x - b.x;
+    }
+
+    function isLineBeforeDestination(line, destination) {
+        const position = destinationPosition(destination);
+        if (line.pageNumber !== position.pageNumber) {
+            return line.pageNumber < position.pageNumber;
         }
-        let index = lines.findIndex(line => line.y >= targetPoint.y - 12);
-        if (index < 0) {
-            index = lines.reduce((best, line, lineIndex) => {
-                const distance = Math.abs(line.y - targetPoint.y);
-                return distance < best.distance ? {index: lineIndex, distance} : best;
-            }, {index: 0, distance: Number.POSITIVE_INFINITY}).index;
+        if (line.column !== position.column) {
+            return line.column < position.column;
+        }
+        return line.y < position.y - Math.max(line.height * 0.7, 8);
+    }
+
+    function isLineAtOrAfterDestination(line, destination) {
+        const position = destinationPosition(destination);
+        if (line.pageNumber !== position.pageNumber) {
+            return line.pageNumber > position.pageNumber;
+        }
+        if (line.column !== position.column) {
+            return line.column > position.column;
+        }
+        return line.y >= position.y - Math.max(line.height * 0.35, 4);
+    }
+
+    function destinationKey(destination) {
+        return [
+            destination.pageNumber,
+            Math.round(destination.targetPoint.x),
+            Math.round(destination.targetPoint.y),
+        ].join(':');
+    }
+
+    function getDestinationIndexCacheKey() {
+        const pageCount = PDFViewerApplication.pdfDocument?.numPages ?? 0;
+        const pageView = PDFViewerApplication.pdfViewer.getPageView(0);
+        const viewport = pageView?.viewport;
+        const scale = viewport?.scale ?? pageView?.scale ?? 'unknown';
+        const width = Math.round(pageView?.width ?? viewport?.width ?? 0);
+        const height = Math.round(pageView?.height ?? viewport?.height ?? 0);
+        return `${pageCount}:${scale}:${width}:${height}`;
+    }
+
+    async function getInternalDestinationIndex() {
+        const cacheKey = getDestinationIndexCacheKey();
+        if (citationPreviewState.destinationIndexCache.has(cacheKey)) {
+            return citationPreviewState.destinationIndexCache.get(cacheKey);
         }
 
-        const number = (labelText || '').match(/\d+/)?.[0];
-        if (number) {
-            const exactRegex = referenceStartRegex(number);
-            const lower = Math.max(0, index - 3);
-            const upper = Math.min(lines.length - 1, index + 10);
-            for (let candidate = lower; candidate <= upper; candidate++) {
-                if (exactRegex.test(lines[candidate].text)) {
-                    return candidate;
+        const promise = (async () => {
+            if (!PDFViewerApplication.pdfDocument) {
+                return [];
+            }
+            const unique = new Map();
+            const pageNumbers = Array.from({length: PDFViewerApplication.pdfDocument.numPages}, (_, index) => index + 1);
+            const annotationsByPage = await Promise.all(pageNumbers.map(pageNumber => getPageAnnotations(pageNumber)));
+            for (const annotations of annotationsByPage) {
+                for (const annotation of annotations) {
+                    if (!annotation?.dest) {
+                        continue;
+                    }
+                    const destination = await resolveDestination(annotation.dest).catch(() => null);
+                    if (!destination) {
+                        continue;
+                    }
+                    const key = destinationKey(destination);
+                    if (!unique.has(key)) {
+                        unique.set(key, {
+                            key,
+                            destination,
+                            position: destinationPosition(destination),
+                        });
+                    }
+                }
+            }
+            return Array.from(unique.values())
+                .sort((a, b) => compareReadingPositions(a.position, b.position));
+        })();
+
+        citationPreviewState.destinationIndexCache.set(cacheKey, promise);
+        return promise;
+    }
+
+    function findNextDestination(index, destination) {
+        const key = destinationKey(destination);
+        const currentPosition = destinationPosition(destination);
+        let currentIndex = index.findIndex(entry => entry.key === key);
+        if (currentIndex < 0) {
+            currentIndex = index.findIndex(entry => compareReadingPositions(entry.position, currentPosition) > 0) - 1;
+        }
+        return currentIndex >= 0 ? index[currentIndex + 1]?.destination ?? null : null;
+    }
+
+    function buildBodyLeftIndex(destinationIndex) {
+        const leftByColumn = new Map();
+        for (const entry of destinationIndex) {
+            const key = `${entry.position.pageNumber}:${entry.position.column}`;
+            const previous = leftByColumn.get(key);
+            leftByColumn.set(key, previous === undefined ? entry.position.x : Math.min(previous, entry.position.x));
+        }
+        return leftByColumn;
+    }
+
+    function lineTextFromDestinationItems(line, cropLeft) {
+        const tolerance = Math.max(line.height * 0.35, 4);
+        const items = line.items
+            .filter(item => item.right >= cropLeft - tolerance)
+            .sort((a, b) => a.x - b.x);
+        let text = '';
+        let lastRight = null;
+        for (const item of items) {
+            if (lastRight !== null && item.x - lastRight > Math.max(item.height * 0.2, 2)) {
+                text += ' ';
+            }
+            text += item.str;
+            lastRight = item.right;
+        }
+        return text.replace(/\s+/g, ' ').trim();
+    }
+
+    // Returns the concatenated raw text of a page (all PDF text items joined with a
+    // space), cached. Used for the marker-based reference extraction, which bypasses
+    // the fragile line-grouping heuristics used elsewhere.
+    function getPageRawText(pageNumber) {
+        if (citationPreviewState.rawTextCache.has(pageNumber)) {
+            return citationPreviewState.rawTextCache.get(pageNumber);
+        }
+        const promise = PDFViewerApplication.pdfDocument.getPage(pageNumber)
+            .then(page => page.getTextContent())
+            .then(tc => {
+                let out = '';
+                for (const item of tc.items) {
+                    if (typeof item.str !== 'string') { continue; }
+                    out += item.str;
+                    out += ' ';
+                }
+                out += '\n';
+                return out;
+            })
+            .catch(() => '');
+        citationPreviewState.rawTextCache.set(pageNumber, promise);
+        return promise;
+    }
+
+    // Removes LaTeX line-number remnants that leak into extracted text (e.g. "495 ")
+    // while preserving 4-digit years that appear in citations.
+    function stripMarginLineNumbers(s) {
+        return s.replace(/(?<=\s)(\d{2,4})(?=\s)/g, (match, _num, offset, orig) => {
+            if (/^(?:19|20)\d{2}$/.test(match)) {
+                const before = orig.slice(Math.max(0, offset - 20), offset);
+                const after = orig.slice(offset + match.length, offset + match.length + 20);
+                // Preserve years in typical citation contexts.
+                if (/[,.]\s*$/.test(before)) { return match; }
+                if (/^\s*[.)]/.test(after)) { return match; }
+                if (/\b(?:In|Proc|Conf|Research|Transactions|Systems|Journal|Review|Volume|pages)\b[^a-z]*$/.test(before)) { return match; }
+            }
+            return '';
+        });
+    }
+
+    // Finds the char index of the first standalone "[targetNum]" marker in text,
+    // preferring markers that are NOT inside a compound citation like "[22, 23]".
+    function findReferenceMarkerStart(text, targetNum) {
+        const escaped = String(targetNum).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const re = new RegExp(`\\[\\s*${escaped}\\s*\\]`, 'g');
+        let m;
+        while ((m = re.exec(text)) !== null) {
+            const before = text.slice(Math.max(0, m.index - 4), m.index);
+            if (/[,;\-\u2013\u2014]\s*$/.test(before)) { continue; }
+            return m.index;
+        }
+        // Accept compound-context as a last resort.
+        re.lastIndex = 0;
+        m = re.exec(text);
+        return m ? m.index : -1;
+    }
+
+    // Finds the char index of the NEXT bracketed marker (different from targetNum)
+    // at or after minStart, skipping compound markers like "[22, 23]".
+    function findNextReferenceMarker(text, targetNum, minStart) {
+        const re = /\[\s*(\d+[A-Za-z]?)\s*\]/g;
+        re.lastIndex = minStart;
+        let m;
+        while ((m = re.exec(text)) !== null) {
+            if (m[1] === String(targetNum)) { continue; }
+            const before = text.slice(Math.max(0, m.index - 4), m.index);
+            if (/[,;\-\u2013\u2014]\s*$/.test(before)) { continue; }
+            return m.index;
+        }
+        return -1;
+    }
+
+    // For the LAST reference entry (no subsequent marker) we need a section-header
+    // boundary so we don't bleed into the Appendix / Checklist.
+    function findPostReferencesBoundary(text, minStart) {
+        const re = /\b(?:Technical appendices|NeurIPS Paper Checklist|Supplementary Material|A\s+Technical\b|Appendix\b)/g;
+        re.lastIndex = minStart;
+        const m = re.exec(text);
+        return m ? m.index : -1;
+    }
+
+    // Marker-based reference extraction: pulls concatenated text from the destination
+    // page (plus up to two follow-on pages for continuation), locates "[targetNum]",
+    // slices until the next reference marker, and cleans it up. Returns the cleaned
+    // reference text, or null if the marker pattern isn't found (caller should then
+    // fall back to the line-based path).
+    async function extractReferenceByMarker(destPageNumber, targetNum) {
+        if (!targetNum) { return null; }
+        const pageCount = PDFViewerApplication.pdfDocument?.numPages ?? 0;
+        const lastPage = Math.min(pageCount, destPageNumber + 2);
+        let combined = '';
+        for (let p = destPageNumber; p <= lastPage; p++) {
+            combined += await getPageRawText(p);
+        }
+        const start = findReferenceMarkerStart(combined, targetNum);
+        if (start < 0) { return null; }
+        let sliceEnd = findNextReferenceMarker(combined, targetNum, start + 1);
+        if (sliceEnd < 0) {
+            const boundary = findPostReferencesBoundary(combined, start + 1);
+            sliceEnd = boundary >= 0 ? boundary : combined.length;
+        }
+        let slice = combined.slice(start, sliceEnd);
+        const escaped = String(targetNum).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        slice = slice.replace(new RegExp(`^\\s*\\[\\s*${escaped}\\s*\\]\\s*`), '');
+        slice = slice.replace(/\s+/g, ' ').trim();
+        slice = stripMarginLineNumbers(' ' + slice + ' ').replace(/\s+/g, ' ').trim();
+        return slice.slice(0, citationPreviewOptions.maxChars);
+    }
+
+    function cleanCitationNumber(value) {
+        const normalized = (value || '').replace(/\s+/g, ' ').trim();
+        if (/^\d+[A-Za-z]?$/.test(normalized)) { return normalized; }
+        const bracket = normalized.match(/\[\s*(\d+[A-Za-z]?)/);
+        if (bracket) { return bracket[1]; }
+        return '';
+    }
+
+    // ------------------------------------------------------------------
+    // Unified entry-based reference extraction.
+    //
+    // Parses the bibliography into structured entries (handling both numeric
+    // "[NN]..." and author-year "Surname, I. ..." formats, single or 2-column
+    // layouts), then matches a clicked destination to the correct entry by
+    // (page, column, y). This works across both citation styles and is robust
+    // to PDF text-layer quirks like jittery y-coordinates and column splits.
+    // ------------------------------------------------------------------
+
+    function getPdfPageViewport(pageNumber) {
+        const pageView = PDFViewerApplication.pdfViewer.getPageView(pageNumber - 1);
+        return pageView?.viewport ?? null;
+    }
+
+    async function getPageRawItems(pageNumber) {
+        if (citationPreviewState.rawItemsCache.has(pageNumber)) {
+            return citationPreviewState.rawItemsCache.get(pageNumber);
+        }
+        const promise = PDFViewerApplication.pdfDocument.getPage(pageNumber)
+            .then(async (pdfPage) => {
+                const viewport = getPdfPageViewport(pageNumber) || pdfPage.getViewport({scale: 1.0});
+                const textContent = await pdfPage.getTextContent();
+                return textContent.items
+                    .filter(item => typeof item.str === 'string')
+                    .map(item => {
+                        const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+                        const h = Math.max(Math.abs(item.height || 0) * viewport.scale, Math.hypot(tx[2], tx[3]), 1);
+                        const w = Math.max(Math.abs(item.width || 0) * viewport.scale, item.str.length * h * 0.35, 1);
+                        return {
+                            str: item.str,
+                            x: tx[4],
+                            y: tx[5],
+                            right: tx[4] + w,
+                            height: h,
+                            pageNumber,
+                        };
+                    });
+            })
+            .catch(() => []);
+        citationPreviewState.rawItemsCache.set(pageNumber, promise);
+        return promise;
+    }
+
+    // Detects single vs 2-column layout on a page by checking whether any
+    // non-trivial number of text items span the page's horizontal centerline.
+    async function getPageColumnInfo(pageNumber) {
+        if (citationPreviewState.columnInfoCache.has(pageNumber)) {
+            return citationPreviewState.columnInfoCache.get(pageNumber);
+        }
+        const promise = (async () => {
+            const items = await getPageRawItems(pageNumber);
+            const viewport = getPdfPageViewport(pageNumber);
+            const width = viewport?.width ?? 612;
+            const centerX = width / 2;
+            const content = items.filter(it => it.str.trim() !== '' && it.height >= 4);
+            const spanning = content.filter(it => it.x < centerX && it.right > centerX).length;
+            const twoCol = spanning < Math.max(3, content.length * 0.03);
+            return { twoCol, centerX, width };
+        })();
+        citationPreviewState.columnInfoCache.set(pageNumber, promise);
+        return promise;
+    }
+
+    function assignColumn(item, columnInfo) {
+        if (!columnInfo.twoCol) { return 0; }
+        return item.x < columnInfo.centerX ? 0 : 1;
+    }
+
+    // Groups raw items into visual lines (within same page+column, close y),
+    // returning ordered lines each with concatenated text.
+    function groupItemsIntoLines(items, columnInfo) {
+        const itemsWithCol = items
+            .filter(it => it.str.trim() !== '')
+            .map(it => ({ ...it, column: assignColumn(it, columnInfo) }))
+            .sort((a, b) => a.pageNumber - b.pageNumber || a.y - b.y || a.column - b.column || a.x - b.x);
+        const lines = [];
+        for (const item of itemsWithCol) {
+            const tol = Math.max((item.height || 0) * 0.5, 3);
+            let line = null;
+            for (let i = lines.length - 1; i >= 0; i--) {
+                const c = lines[i];
+                if (c.pageNumber !== item.pageNumber || c.column !== item.column) { continue; }
+                if (Math.abs(c.y - item.y) <= tol) { line = c; break; }
+                if (c.y < item.y - tol * 2) { break; }
+            }
+            if (!line) {
+                line = {
+                    pageNumber: item.pageNumber,
+                    column: item.column,
+                    y: item.y,
+                    height: item.height,
+                    items: [],
+                    text: '',
+                };
+                lines.push(line);
+            }
+            line.items.push(item);
+            line.y = (line.y * (line.items.length - 1) + item.y) / line.items.length;
+            line.height = Math.max(line.height, item.height);
+        }
+        lines.forEach(l => {
+            l.items.sort((a, b) => a.x - b.x);
+            let text = '';
+            for (const it of l.items) { text += it.str + ' '; }
+            l.text = text.replace(/\s+/g, ' ').trim();
+        });
+        return lines.sort((a, b) =>
+            a.pageNumber - b.pageNumber || a.column - b.column || a.y - b.y || a.x - b.x);
+    }
+
+    function detectEntryStart(lineText) {
+        const clean = (lineText || '').replace(/^\s*\d{1,4}\s+/, '').trimStart();
+        if (!clean) { return null; }
+        const bracketed = clean.match(/^\[\s*(\d+[A-Za-z]?)\s*\]/);
+        if (bracketed) { return { kind: 'numeric', key: bracketed[1] }; }
+        const numDot = clean.match(/^(\d+[A-Za-z]?)[.)]\s+[A-Z]/);
+        if (numDot && !/^(?:19|20)\d{2}[a-z]?$/.test(numDot[1])) {
+            return { kind: 'numeric', key: numDot[1] };
+        }
+        const author = clean.match(/^([A-Z][A-Za-z\u00C0-\u017F'\-]*),\s+[A-Z]\./);
+        if (author) { return { kind: 'author-year', key: author[1] }; }
+        return null;
+    }
+
+    function prevLineContinues(prevText) {
+        if (!prevText) { return false; }
+        const t = prevText.trim();
+        if (/(?:,|\band|&)\s*$/i.test(t)) { return true; }
+        if (/\w-$/.test(t)) { return true; }
+        return false;
+    }
+
+    function isReferencesSectionBoundary(text) {
+        const t = (text || '').replace(/^\s*\d{1,4}\s+/, '').trim();
+        if (!t) { return false; }
+        if (/^(?:Technical appendices|NeurIPS Paper Checklist|Supplementary Material|Broader Impact|Acknowledg(?:e?ments)?|Limitations)\b/i.test(t)) { return true; }
+        if (/^(?:[A-Z]|\d+)\.?\s+(?:Technical|Appendix|Supplementary|Additional|Broader|Limitations|Proofs?|Further)\b/.test(t)) { return true; }
+        if (/^Appendix\b/i.test(t)) { return true; }
+        return false;
+    }
+
+    function isReferencesHeading(lineText) {
+        const t = (lineText || '').replace(/^\s*\d{1,4}\s+/, '').trim();
+        return /^References\b/i.test(t) && t.length < 40;
+    }
+
+    // Join raw items preserving reading order by first grouping into visual lines.
+    function joinRawItems(items, columnInfo) {
+        const lines = groupItemsIntoLines(items, columnInfo);
+        let text = '';
+        for (const line of lines) { text += line.text + ' '; }
+        text = text.replace(/(\w)-\s+([a-z])/g, '$1$2');
+        return text.replace(/\s+/g, ' ').trim();
+    }
+
+    function polishEntryBody(body, hint) {
+        let s = body;
+        if (hint.kind === 'numeric' && hint.key) {
+            const esc = String(hint.key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            s = s.replace(new RegExp(`^\\s*(?:\\d{1,4}\\s+)?\\[\\s*${esc}\\s*\\]\\s*`), '');
+            s = s.replace(new RegExp(`^\\s*(?:\\d{1,4}\\s+)?${esc}[.)]\\s*`), '');
+        }
+        s = stripMarginLineNumbers(' ' + s + ' ').replace(/\s+/g, ' ').trim();
+        return s;
+    }
+
+    async function buildReferenceEntries() {
+        if (!PDFViewerApplication.pdfDocument) { return []; }
+        const pageCount = PDFViewerApplication.pdfDocument.numPages;
+
+        // Find References heading.
+        let sectionStart = null;
+        for (let p = 1; p <= pageCount && !sectionStart; p++) {
+            const columnInfo = await getPageColumnInfo(p);
+            const items = await getPageRawItems(p);
+            const lines = groupItemsIntoLines(items, columnInfo);
+            for (const line of lines) {
+                if (isReferencesHeading(line.text)) {
+                    sectionStart = { pageNumber: p, y: line.y, column: line.column, columnInfo };
+                    break;
                 }
             }
         }
-        return index;
+        if (!sectionStart) { return []; }
+
+        // Collect lines and items from the section onward. For pages OTHER than
+        // the section's start page, filter out running headers / footers (text
+        // items in the top/bottom ~7% of the page) to prevent them from bleeding
+        // into the last reference entry on the page.
+        const sectionLines = [];
+        const sectionItems = [];
+        for (let p = sectionStart.pageNumber; p <= pageCount; p++) {
+            const columnInfo = await getPageColumnInfo(p);
+            const items = await getPageRawItems(p);
+            const viewport = getPdfPageViewport(p);
+            const pageH = viewport?.height ?? 792;
+            const topMargin = pageH * 0.07;
+            const bottomMargin = pageH * 0.93;
+            const inBodyRegion = (it) => p === sectionStart.pageNumber || (it.y >= topMargin && it.y <= bottomMargin);
+
+            const bodyItems = items.filter(inBodyRegion);
+            const lines = groupItemsIntoLines(bodyItems, columnInfo);
+            for (const line of lines) {
+                if (p === sectionStart.pageNumber && line.column === sectionStart.column && line.y <= sectionStart.y + 2) { continue; }
+                sectionLines.push(line);
+            }
+            for (const item of bodyItems) {
+                const column = assignColumn(item, columnInfo);
+                if (p === sectionStart.pageNumber && column === sectionStart.column && item.y <= sectionStart.y + 2) { continue; }
+                sectionItems.push({ ...item, column });
+            }
+        }
+
+        // Truncate at the first section boundary after References.
+        let cutIndex = sectionLines.findIndex(l => isReferencesSectionBoundary(l.text));
+        const boundaryLine = cutIndex >= 0 ? sectionLines[cutIndex] : null;
+        const filteredLines = cutIndex >= 0 ? sectionLines.slice(0, cutIndex) : sectionLines;
+
+        // Identify entry starts.
+        const starts = [];
+        for (let i = 0; i < filteredLines.length; i++) {
+            const hint = detectEntryStart(filteredLines[i].text);
+            if (!hint) { continue; }
+            const prev = i > 0 ? filteredLines[i - 1].text : '';
+            if (hint.kind === 'author-year' && prevLineContinues(prev)) { continue; }
+            starts.push({ line: filteredLines[i], hint });
+        }
+
+        // Build entries.
+        const entries = [];
+        for (let s = 0; s < starts.length; s++) {
+            const cur = starts[s];
+            const next = starts[s + 1] ?? null;
+            const startLine = cur.line;
+            const endLine = next ? next.line : boundaryLine;
+            const columnInfo = await getPageColumnInfo(startLine.pageNumber);
+
+            const entryItems = sectionItems.filter(item => {
+                const atOrAfterStart = item.pageNumber > startLine.pageNumber
+                    || (item.pageNumber === startLine.pageNumber && item.column > startLine.column)
+                    || (item.pageNumber === startLine.pageNumber && item.column === startLine.column
+                        && item.y >= startLine.y - Math.max(startLine.height * 0.5, 3));
+                if (!atOrAfterStart) { return false; }
+                if (!endLine) { return true; }
+                const beforeEnd = item.pageNumber < endLine.pageNumber
+                    || (item.pageNumber === endLine.pageNumber && item.column < endLine.column)
+                    || (item.pageNumber === endLine.pageNumber && item.column === endLine.column
+                        && item.y < endLine.y - Math.max(endLine.height * 0.5, 3));
+                return beforeEnd;
+            });
+            // Strip running headers / footers and isolated page numbers from pages
+            // other than the entry's start page.
+            const cleanedItems = entryItems.filter(item => {
+                if (item.pageNumber === startLine.pageNumber) { return true; }
+                // Page number (short numeric-only item far from body text)
+                if (/^\d{1,4}$/.test(item.str.trim()) && item.height < 8) { return false; }
+                return true;
+            });
+
+            const raw = joinRawItems(cleanedItems, columnInfo);
+            const body = polishEntryBody(raw, cur.hint).slice(0, citationPreviewOptions.maxChars);
+            if (!body) { continue; }
+            entries.push({
+                kind: cur.hint.kind,
+                key: cur.hint.key,
+                text: body,
+                startPos: {
+                    pageNumber: startLine.pageNumber,
+                    column: startLine.column,
+                    y: startLine.y,
+                },
+            });
+        }
+        return entries;
+    }
+
+    async function getReferenceEntries() {
+        if (!citationPreviewState.referenceEntriesPromise) {
+            citationPreviewState.referenceEntriesPromise = buildReferenceEntries().catch(() => []);
+        }
+        return citationPreviewState.referenceEntriesPromise;
+    }
+
+    // Match by the destination's LaTeX slug (e.g. "cite.sohl2015deep" -> "sohl").
+    // natbib places destination anchors at slightly inconsistent positions
+    // (especially across column boundaries), so slug-based matching is strictly
+    // more reliable than position-based for author-year style.
+    function matchEntryByDestName(entries, destName) {
+        if (typeof destName !== 'string' || !destName) { return null; }
+        // Drop the "cite." / "page." / etc. prefix and extract the author token
+        // that appears before the year digits.
+        const m = destName.match(/^(?:cite\.)?([A-Za-z]+)(\d{4}[a-z]?)?(.*)$/);
+        if (!m) { return null; }
+        const surnameToken = m[1].toLowerCase();
+        const yearToken = m[2] ? m[2].slice(0, 4) : null;
+        const tailToken = (m[3] || '').toLowerCase();
+        const norm = s => (s || '').toLowerCase().replace(/[\s\-']/g, '');
+        const candidates = entries.filter(e => {
+            const key = norm(e.key);
+            return key.startsWith(surnameToken) || surnameToken.startsWith(key);
+        });
+        if (candidates.length === 0) { return null; }
+        if (candidates.length === 1) { return candidates[0]; }
+        // Disambiguate by year appearing in entry text.
+        if (yearToken) {
+            const yearRe = new RegExp(`\\b${yearToken}[a-z]?\\b`);
+            const withYear = candidates.filter(c => yearRe.test(c.text));
+            if (withYear.length === 1) { return withYear[0]; }
+            if (withYear.length > 1 && tailToken) {
+                // Further disambiguate by tail keyword (e.g. "simple", "improved").
+                const keyword = tailToken.replace(/[^a-z]/g, '').slice(0, 8);
+                if (keyword.length >= 4) {
+                    const kwRe = new RegExp(keyword, 'i');
+                    const withKw = withYear.filter(c => kwRe.test(c.text));
+                    if (withKw.length >= 1) { return withKw[0]; }
+                }
+                return withYear[0];
+            }
+            if (withYear.length >= 1) { return withYear[0]; }
+        }
+        return candidates[0];
+    }
+
+    async function findEntryForDestination(entries, destination, destName) {
+        if (!entries.length) { return null; }
+        // Primary: slug-based matching when available (robust across natbib quirks).
+        if (destName) {
+            const byName = matchEntryByDestName(entries, destName);
+            if (byName) { return byName; }
+        }
+        // Fallback: position-based matching. Use offset-aware scoring — natbib places
+        // hypertargets 0-25pt above the entry's first line. Prefer entries whose startY
+        // is at or below destY; smallest below-offset wins.
+        const destPage = destination.pageNumber;
+        const dy = destination.targetPoint.y;
+        const onPage = entries.filter(e => e.startPos.pageNumber === destPage);
+        if (!onPage.length) { return null; }
+        let bestBelow = null, bestBelowOffset = Infinity;
+        let bestAbove = null, bestAboveOffset = Infinity;
+        for (const e of onPage) {
+            const offset = e.startPos.y - dy;
+            if (offset >= -2) {
+                if (offset < bestBelowOffset) { bestBelowOffset = offset; bestBelow = e; }
+            } else if (-offset < bestAboveOffset) {
+                bestAboveOffset = -offset; bestAbove = e;
+            }
+        }
+        return bestBelow ?? bestAbove;
+    }
+
+    async function extractReferenceByEntry(destination, destName) {
+        const entries = await getReferenceEntries();
+        const entry = await findEntryForDestination(entries, destination, destName);
+        if (!entry) { return null; }
+        return { text: entry.text, label: entry.key, kind: entry.kind };
     }
 
     async function resolveReferenceForItem(item) {
@@ -688,29 +1284,82 @@
             throw new Error('Destination unavailable.');
         }
 
-        const lines = await getPageTextLines(destination.pageNumber);
-        const pageView = PDFViewerApplication.pdfViewer.getPageView(destination.pageNumber - 1);
-        const column = destination.targetPoint.x < pageView.width / 2 ? 0 : 1;
-        const columnLines = lines
-            .filter(line => line.column === column)
-            .sort((a, b) => a.y - b.y || a.x - b.x);
-        const hintLabel = item.displayLabel || item.labelText;
-        const startIndex = findReferenceStartIndex(columnLines, destination.targetPoint, hintLabel);
-        if (startIndex < 0) {
-            throw new Error('Reference text unavailable.');
-        }
-
-        const selected = [];
-        const genericRegex = referenceStartRegex();
-        for (let index = startIndex; index < columnLines.length && selected.length < citationPreviewOptions.maxLines; index++) {
-            const lineText = columnLines[index].text;
-            if (index > startIndex && genericRegex.test(lineText)) {
-                break;
+        // Strategy 1: marker-based extraction for "[NN]" style. Fastest and most
+        // reliable when we can identify a numeric citation; skipped for author-year.
+        const citationNum = cleanCitationNumber(item.displayLabel) || cleanCitationNumber(item.labelText);
+        if (citationNum) {
+            try {
+                const text = await extractReferenceByMarker(destination.pageNumber, citationNum);
+                if (text) {
+                    return {
+                        pageNumber: destination.pageNumber,
+                        dest: item.dest,
+                        marker: '',
+                        text,
+                        label: citationNum,
+                        targetPoint: destination.targetPoint,
+                    };
+                }
+            } catch (_err) {
+                // fall through
             }
-            selected.push(lineText);
         }
 
-        const text = selected.join(' ').replace(/\s+/g, ' ').trim().slice(0, citationPreviewOptions.maxChars);
+        // Strategy 2: unified entry-based extraction. Handles both numeric and
+        // author-year bibliographies, single and 2-column layouts. Parses the
+        // References section into structured entries and matches by destination.
+        try {
+            const destName = typeof item.dest === 'string' ? item.dest : null;
+            const byEntry = await extractReferenceByEntry(destination, destName);
+            if (byEntry && byEntry.text) {
+                return {
+                    pageNumber: destination.pageNumber,
+                    dest: item.dest,
+                    marker: '',
+                    text: byEntry.text,
+                    label: byEntry.label,
+                    targetPoint: destination.targetPoint,
+                };
+            }
+        } catch (_err) {
+            // fall through
+        }
+
+        const destinationIndex = await getInternalDestinationIndex();
+        const startPosition = destinationPosition(destination);
+        const nextDestination = findNextDestination(destinationIndex, destination);
+        const endPosition = nextDestination ? destinationPosition(nextDestination) : null;
+        const bodyLeftByColumn = buildBodyLeftIndex(destinationIndex);
+        const lastPage = endPosition?.pageNumber ?? destination.pageNumber;
+        const selected = [];
+
+        for (let pageNumber = destination.pageNumber; pageNumber <= lastPage; pageNumber++) {
+            const lines = await getPageTextLines(pageNumber);
+            for (const line of lines) {
+                const position = linePosition(line);
+                if (isLineBeforeDestination(line, destination)) {
+                    continue;
+                }
+                if (nextDestination && isLineAtOrAfterDestination(line, nextDestination)) {
+                    continue;
+                }
+                const sameStartColumn = position.pageNumber === startPosition.pageNumber
+                    && position.column === startPosition.column;
+                const bodyLeftKey = `${position.pageNumber}:${position.column}`;
+                const cropLeft = sameStartColumn ? startPosition.x : bodyLeftByColumn.get(bodyLeftKey) ?? startPosition.x;
+                const lineText = lineTextFromDestinationItems(line, cropLeft);
+                if (lineText) {
+                    selected.push(lineText);
+                }
+            }
+        }
+
+        const outputLines = nextDestination ? selected : selected.slice(0, citationPreviewOptions.maxLines);
+        const text = outputLines
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, citationPreviewOptions.maxChars);
         if (!text) {
             throw new Error('Reference text unavailable.');
         }
