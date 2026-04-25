@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Changed
+- Ask users to choose the initial Local Replica sync direction when selecting a project folder locally.
+
 ## [0.15.13] - 2026-04-18
 ### Changed
 - Rename the fork's VS Code command, URI, view, context, custom editor, configuration, and diagnostic namespaces to `semantic-researcher-overleaf`.

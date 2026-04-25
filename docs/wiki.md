@@ -175,6 +175,7 @@ This command differs from `Open Project Locally ...` in two important ways:
 
 1. the selected folder is used directly as the replica root, so `.overleaf/settings.json` and the synced project files will be created inside that exact folder;
 2. the selected folder becomes the active local replica root for the current VS Code window, so local history, chat, collaboration helpers, compile / preview actions, and intellisense-related features resolve against that exact folder without replacing the current window.
+3. before the first sync, the extension asks whether Overleaf remote files or the selected local folder should be trusted as the initial source of truth.
 
 ## Basic Usage
 
@@ -338,6 +339,8 @@ To enhance the experience of collaboration via chat, we propose the following ad
 The Local Replica feature is a implementation of [Source Control Manager](anatomy.md#srcscm), which enables the possibility of "Open Project Locally".
 
 The entrance is available on the status bar when you open the project locally. Or you can configure it via the "Configure Source Control" command in the command palette.
+
+When you use "Select Project Folder Locally" for a project, the extension asks which side should be trusted for the first sync. Choose "Use Overleaf remote files" to pull Overleaf into the selected local folder without immediately uploading pre-existing local-only files. Choose "Use selected local folder" only when the local folder is the intended source of truth, because remote-only files may be overwritten or deleted.
 
 ![screenshot-local-replica-status](assets/screenshot-local-replica-status.png)
 

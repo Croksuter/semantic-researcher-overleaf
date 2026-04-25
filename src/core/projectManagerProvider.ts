@@ -747,6 +747,7 @@ export class ProjectManagerProvider implements vscode.TreeDataProvider<DataItem>
             {
                 exactBaseUri: true,
                 replaceExistingLabel: LocalReplicaSCMProvider.label,
+                localReplicaInitialSyncPolicy: 'ask',
             },
         ) as LocalReplicaSCMProvider | undefined;
 

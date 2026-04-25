@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { VirtualFileSystem } from '../core/remoteFileSystemProvider';
 
 import { BaseSCM, CommitItem, SettingItem } from ".";
-import { LocalReplicaSCMProvider } from './localReplicaSCM';
+import { LocalReplicaInitialSyncPolicy, LocalReplicaSCMProvider } from './localReplicaSCM';
 import { LocalGitBridgeSCMProvider } from './localGitBridgeSCM'; 
 import { HistoryViewProvider } from './historyViewProvider';
 import { GlobalStateManager } from '../utils/globalStateManager';
@@ -51,6 +51,11 @@ interface SCMRecord {
 interface CreateSCMOptions {
     exactBaseUri?: boolean;
     replaceExistingLabel?: string;
+    localReplicaInitialSyncPolicy?: LocalReplicaInitialSyncPolicy|'ask';
+}
+
+interface CreateSCMRuntimeOptions {
+    localReplicaInitialSyncPolicy?: LocalReplicaInitialSyncPolicy;
 }
 
 function parsePersistedBaseUri(baseUri: string): vscode.Uri {
@@ -153,7 +158,13 @@ export class SCMCollectionProvider extends vscode.Disposable {
         });
     }
 
-    private async createSCM(scmProto: SupportedSCM, baseUri: vscode.Uri, newSCM=false, enabled=true) {
+    private async createSCM(
+        scmProto: SupportedSCM,
+        baseUri: vscode.Uri,
+        newSCM=false,
+        enabled=true,
+        runtimeOptions: CreateSCMRuntimeOptions={},
+    ) {
         const scmRecordKey = `${scmProto.label}:${baseUri.toString()}`;
         const existing = this.scms.find(item =>
             item.scm.baseUri.toString()===baseUri.toString()
@@ -175,7 +186,7 @@ export class SCMCollectionProvider extends vscode.Disposable {
                 this.updateStatus();
             }
             if (!activated && existing.scm instanceof LocalReplicaSCMProvider) {
-                await existing.scm.initializeLocalReplica();
+                await existing.scm.initializeLocalReplica(runtimeOptions.localReplicaInitialSyncPolicy);
             }
             return existing.scm;
         }
@@ -185,7 +196,7 @@ export class SCMCollectionProvider extends vscode.Disposable {
             return pendingSCM;
         }
 
-        const creation = this.createSCMRecord(scmProto, baseUri, newSCM, enabled);
+        const creation = this.createSCMRecord(scmProto, baseUri, newSCM, enabled, runtimeOptions);
         this.pendingSCMs.set(scmRecordKey, creation);
         try {
             return await creation;
@@ -196,8 +207,17 @@ export class SCMCollectionProvider extends vscode.Disposable {
         }
     }
 
-    private async createSCMRecord(scmProto: SupportedSCM, baseUri: vscode.Uri, newSCM=false, enabled=true) {
+    private async createSCMRecord(
+        scmProto: SupportedSCM,
+        baseUri: vscode.Uri,
+        newSCM=false,
+        enabled=true,
+        runtimeOptions: CreateSCMRuntimeOptions={},
+    ) {
         const scm = new scmProto(this.vfs, baseUri);
+        if (scm instanceof LocalReplicaSCMProvider && runtimeOptions.localReplicaInitialSyncPolicy!==undefined) {
+            scm.setInitialSyncPolicy(runtimeOptions.localReplicaInitialSyncPolicy);
+        }
         // insert into global state
         if (newSCM) {
             this.vfs.setProjectSCMPersist(scm.scmKey, {
@@ -282,10 +302,30 @@ export class SCMCollectionProvider extends vscode.Disposable {
         })
         .then(async (baseUri) => {
             if (baseUri) {
+                let localReplicaInitialSyncPolicy = options?.localReplicaInitialSyncPolicy;
+                if (scmProto===LocalReplicaSCMProvider && localReplicaInitialSyncPolicy==='ask') {
+                    localReplicaInitialSyncPolicy = await LocalReplicaSCMProvider.promptInitialSyncPolicy(
+                        baseUri,
+                        this.vfs.projectName,
+                    );
+                    if (localReplicaInitialSyncPolicy===undefined) {
+                        return undefined;
+                    }
+                }
                 if (options?.replaceExistingLabel) {
                     this.removeSCMsByLabel(options.replaceExistingLabel);
                 }
-                const scm = await this.createSCM(scmProto, baseUri, true);
+                const scm = await this.createSCM(
+                    scmProto,
+                    baseUri,
+                    true,
+                    true,
+                    {
+                        localReplicaInitialSyncPolicy: localReplicaInitialSyncPolicy==='ask'
+                            ? undefined
+                            : localReplicaInitialSyncPolicy,
+                    },
+                );
                 if (scm) {
                     vscode.window.showInformationMessage( vscode.l10n.t('"{scm}" created: {uri}.', {scm:scmProto.label, uri: decodeURI(scm.baseUri.toString()) }) );
                     return scm;
