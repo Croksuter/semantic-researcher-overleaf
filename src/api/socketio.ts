@@ -3,9 +3,30 @@ import { Identity, BaseAPI, ProjectMessageResponseSchema } from './base';
 import { FileEntity, DocumentEntity, FileRefEntity, FileType, FolderEntity, ProjectEntity } from '../core/remoteFileSystemProvider';
 import { EventBus } from '../utils/eventBus';
 import { SocketIOAlt } from './socketioAlt';
+import { outputLogger } from '../utils/outputLogger';
 
 function decodePackedUtf8(text: string): string {
     return Buffer.from(text, 'latin1').toString('utf-8');
+}
+
+function socketErrorForLog(error: any): string {
+    return error instanceof Error ? error.message : error?.message ?? String(error);
+}
+
+function socketEmitDetails(event: string, args: any[]): Record<string, unknown> {
+    switch (event) {
+        case 'joinProject':
+            return {projectId: args[0]?.project_id};
+        case 'joinDoc':
+        case 'leaveDoc':
+            return {docId: args[0]};
+        case 'applyOtUpdate':
+            return {docId: args[0], version: args[1]?.v, opCount: args[1]?.op?.length ?? 0};
+        case 'clientTracking.updatePosition':
+            return {docId: args[0]?.doc_id, row: args[0]?.row, column: args[0]?.column};
+        default:
+            return {};
+    }
 }
 
 export interface UpdateUserSchema {
@@ -92,6 +113,11 @@ export class SocketIOAPI {
 
     init() {
         // connect
+        outputLogger.info('socket', 'initialize', {
+            scheme: this.scheme,
+            server: new URL(this.url).host,
+            projectId: this.projectId,
+        });
         switch(this.scheme) {
             case 'Alt':
                 this.socket = new SocketIOAlt(this.url, this.api, this.identity, this.projectId, this.record!);
@@ -108,16 +134,29 @@ export class SocketIOAPI {
         }
         // create emit
         (this.socket.emit)[require('util').promisify.custom] = (event:string, ...args:any[]) => {
+            const details = {scheme: this.scheme, event, ...socketEmitDetails(event, args)};
+            outputLogger.info('socket', 'emit request', details);
+            let settled = false;
             const timeoutPromise = new Promise((_, reject) => {
                 setTimeout(() => {
-                    reject('timeout');
+                    if (!settled) {
+                        settled = true;
+                        outputLogger.warn('socket', 'emit timeout', details);
+                        reject('timeout');
+                    }
                 }, 5000);
             });
             const waitPromise = new Promise((resolve, reject) => {
                 this.socket.emit(event, ...args, (err:any, ...data:any[]) => {
+                    if (settled) {
+                        return;
+                    }
+                    settled = true;
                     if (err) {
+                        outputLogger.warn('socket', 'emit rejected', {...details, error: socketErrorForLog(err)});
                         reject(err);
                     } else {
+                        outputLogger.info('socket', 'emit acknowledged', details);
                         resolve(data);
                     }
                 });
@@ -132,18 +171,19 @@ export class SocketIOAPI {
 
     private initInternalHandlers() {
         this.socket.on('connect', () => {
-            console.log('SocketIOAPI: connected');
+            outputLogger.info('socket', 'connected', {scheme: this.scheme, projectId: this.projectId});
         });
         this.socket.on('connect_failed', () => {
-            console.log('SocketIOAPI: connect_failed');
+            outputLogger.warn('socket', 'connect failed', {scheme: this.scheme, projectId: this.projectId});
         });
         this.socket.on('forceDisconnect', (message:string, delay=10) => {
-            console.log('SocketIOAPI: forceDisconnect', message);
+            outputLogger.warn('socket', 'force disconnect', {scheme: this.scheme, projectId: this.projectId, message, delay});
         });
         this.socket.on('connectionRejected', (err:any) => {
-            console.log('SocketIOAPI: connectionRejected.', err.message);
+            outputLogger.warn('socket', 'connection rejected', {scheme: this.scheme, projectId: this.projectId, error: socketErrorForLog(err)});
         });
         this.socket.on('error', (err:any) => {
+            outputLogger.error('socket', 'error', {scheme: this.scheme, projectId: this.projectId, error: socketErrorForLog(err)});
             throw new Error(err);
         });
 
@@ -152,6 +192,7 @@ export class SocketIOAPI {
                 this.socket.on('joinProjectResponse', (res:any) => {
                     const publicId = res.publicId as string;
                     const project = res.project as ProjectEntity;
+                    outputLogger.info('server-change', 'join project response', {scheme: this.scheme, projectId: project?._id ?? this.projectId, publicId});
                     EventBus.fire('socketioConnectedEvent', {publicId});
                     resolve(project);
                 });
@@ -192,75 +233,91 @@ export class SocketIOAPI {
             switch (handler) {
                 case handlers.onFileCreated:
                     this.socket.on('reciveNewDoc', (parentFolderId:string, doc:DocumentEntity) => {
+                        outputLogger.info('server-change', 'file created', {type: 'doc', parentFolderId, entityId: doc._id, name: doc.name});
                         handler(parentFolderId, 'doc', doc);
                     });
                     this.socket.on('reciveNewFile', (parentFolderId:string, file:FileRefEntity) => {
+                        outputLogger.info('server-change', 'file created', {type: 'file', parentFolderId, entityId: file._id, name: file.name});
                         handler(parentFolderId, 'file', file);
                     });
                     this.socket.on('reciveNewFolder', (parentFolderId:string, folder:FolderEntity) => {
+                        outputLogger.info('server-change', 'file created', {type: 'folder', parentFolderId, entityId: folder._id, name: folder.name});
                         handler(parentFolderId, 'folder', folder);
                     });
                     break;
                 case handlers.onFileRenamed:
                     this.socket.on('reciveEntityRename', (entityId:string, newName:string) => {
+                        outputLogger.info('server-change', 'file renamed', {entityId, newName});
                         handler(entityId, newName);
                     });
                     break;
                 case handlers.onFileRemoved:
                     this.socket.on('removeEntity', (entityId:string) => {
+                        outputLogger.info('server-change', 'file removed', {entityId});
                         handler(entityId);
                     });
                     break;
                 case handlers.onFileMoved:
                     this.socket.on('reciveEntityMove', (entityId:string, folderId:string) => {
+                        outputLogger.info('server-change', 'file moved', {entityId, folderId});
                         handler(entityId, folderId);
                     });
                     break;
                 case handlers.onFileChanged:
                     this.socket.on('otUpdateApplied', (update: UpdateSchema) => {
+                        outputLogger.info('server-change', 'file content updated', {docId: update.doc, version: update.v, opCount: update.op?.length ?? 0});
                         handler(update);
                     });
                     break;
                 case handlers.onDisconnected:
                     this.socket.on('disconnect', () => {
+                        outputLogger.warn('socket', 'disconnected', {scheme: this.scheme, projectId: this.projectId});
                         handler();
                     });
                     break;
                 case handlers.onConnectionAccepted:
                     this.socket.on('connectionAccepted', (_:any, publicId:any) => {
+                        outputLogger.info('socket', 'connection accepted', {scheme: this.scheme, projectId: this.projectId, publicId});
                         handler(publicId);
                     });
                     EventBus.on('socketioConnectedEvent', (arg:{publicId:string}) => {
+                        outputLogger.info('socket', 'connection accepted', {scheme: this.scheme, projectId: this.projectId, publicId: arg.publicId});
                         handler(arg.publicId);
                     });
                     break;
                 case handlers.onClientUpdated:
                     this.socket.on('clientTracking.clientUpdated', (user:UpdateUserSchema) => {
+                        outputLogger.info('server-change', 'client updated', {userId: user.user_id, docId: user.doc_id, row: user.row, column: user.column});
                         handler(user);
                     });
                     break;
                 case handlers.onClientDisconnected:
                     this.socket.on('clientTracking.clientDisconnected', (id:string) => {
+                        outputLogger.info('server-change', 'client disconnected', {clientId: id});
                         handler(id);
                     });
                     break;
                 case handlers.onReceivedMessage:
                     this.socket.on('new-chat-message', (message:ProjectMessageResponseSchema) => {
+                        outputLogger.info('server-change', 'chat message received', {messageId: message.id, userId: message.user_id});
                         handler(message);
                     });
                     break;
                 case handlers.onSpellCheckLanguageUpdated:
                     this.socket.on('spellCheckLanguageUpdated', (language:string) => {
+                        outputLogger.info('server-change', 'spellcheck language updated', {language});
                         handler(language);
                     });
                     break;
                 case handlers.onCompilerUpdated:
                     this.socket.on('compilerUpdated', (compiler:string) => {
+                        outputLogger.info('server-change', 'compiler updated', {compiler});
                         handler(compiler);
                     });
                     break;
                 case handlers.onRootDocUpdated:
                     this.socket.on('rootDocUpdated', (rootDocId:string) => {
+                        outputLogger.info('server-change', 'root document updated', {rootDocId});
                         handler(rootDocId);
                     });
                     break;

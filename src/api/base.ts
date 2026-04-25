@@ -6,6 +6,7 @@ import * as FormData from 'form-data';
 import { v4 as uuidv4 } from 'uuid';
 import fetch from 'node-fetch';
 import { FileEntity, FileType, FolderEntity, OutputFileEntity } from '../core/remoteFileSystemProvider';
+import { outputLogger, sanitizeRouteForLog } from '../utils/outputLogger';
 
 export interface Identity {
     csrfToken: string;
@@ -200,9 +201,11 @@ export class BaseAPI {
     }
 
     private async getCsrfToken(): Promise<Identity> {
+        outputLogger.info('http', 'send request', {method: 'GET', route: 'login', context: 'csrf'});
         const res = await fetch(this.url+'login', {
             method: 'GET', redirect: 'manual', agent: this.agent,
         });
+        outputLogger.info('http', 'receive response', {method: 'GET', route: 'login', context: 'csrf', status: res.status});
         const body = await res.text();
         const match = body.match(/<input.*name="_csrf".*value="([^"]*)">/);
         if (!match) {
@@ -215,6 +218,7 @@ export class BaseAPI {
     }
 
     private async getUserId(cookies:string) {
+        outputLogger.info('http', 'send request', {method: 'GET', route: 'project', context: 'user-id'});
         const res = await fetch(this.url+'project', {
             method: 'GET', redirect:'manual', agent: this.agent,
             headers: {
@@ -222,6 +226,7 @@ export class BaseAPI {
                 'Cookie': cookies,
             }
         });
+        outputLogger.info('http', 'receive response', {method: 'GET', route: 'project', context: 'user-id', status: res.status});
 
         const body = await res.text();
         const userIDMatch = body.match(/<meta\s+name="ol-user_id"\s+content="([^"]*)">/);
@@ -240,6 +245,10 @@ export class BaseAPI {
     // Reference: "github:overleaf/overleaf/services/web/frontend/js/ide/connection/ConnectionManager.js#L137"
     _initSocketV0(identity:Identity, query?:string) {
         const url = new URL(this.url).origin + (query ?? '');
+        outputLogger.info('socket', 'connect requested', {
+            server: new URL(this.url).host,
+            query: query ? sanitizeRouteForLog(query) : undefined,
+        });
         return (require('socket.io-client').connect as any)(url, {
             reconnect: false,
             'force new connection': true,
@@ -252,6 +261,7 @@ export class BaseAPI {
 
     async passportLogin(email:string, password:string): Promise<ResponseSchema> {
         const identity = await this.getCsrfToken();
+        outputLogger.info('http', 'send request', {method: 'POST', route: 'login', context: 'passport-login'});
         const res = await fetch(this.url+'login', {
             method: 'POST', redirect: 'manual', agent: this.agent,
             headers: {
@@ -264,6 +274,7 @@ export class BaseAPI {
             },
             body: JSON.stringify({ _csrf: identity.csrfToken, email: email, password: password })
         });
+        outputLogger.info('http', 'receive response', {method: 'POST', route: 'login', context: 'passport-login', status: res.status});
 
         if (res.status===302) {
             const redirect = ((await res.text()).match(/Found. Redirecting to (.*)/) as any)[1];
@@ -314,6 +325,7 @@ export class BaseAPI {
     }
 
     async updateCookies(identity: Identity) {
+        outputLogger.info('http', 'send request', {method: 'GET', route: 'socket.io/socket.io.js', context: 'update-cookies'});
         const res = await fetch(this.url + 'socket.io/socket.io.js', {
             method: 'GET',
             redirect: 'manual',
@@ -323,6 +335,7 @@ export class BaseAPI {
                 'Cookie': identity.cookies,
             }
         });
+        outputLogger.info('http', 'receive response', {method: 'GET', route: 'socket.io/socket.io.js', context: 'update-cookies', status: res.status});
         const header = res.headers.raw()['set-cookie'];
         if (header !== undefined) {
             const cookies = header[0].split(';')[0];
@@ -339,9 +352,14 @@ export class BaseAPI {
     }
 
     protected async request(type:'GET'|'POST'|'PUT'|'DELETE', route:string, body?:FormData|object, callback?: (res?:string)=>object|undefined, extraHeaders?:object ): Promise<ResponseSchema> {
-        if (this.identity===undefined) { return Promise.reject(); }
+        const safeRoute = sanitizeRouteForLog(route);
+        if (this.identity===undefined) {
+            outputLogger.warn('http', 'request skipped: missing identity', {method: type, route: safeRoute});
+            return Promise.reject();
+        }
 
         let res = undefined;
+        outputLogger.info('http', 'send request', {method: type, route: safeRoute});
         switch(type) {
             case 'GET':
                 res = await fetch(this.url+route, {
@@ -385,6 +403,7 @@ export class BaseAPI {
                 });
                 break;
         };
+        outputLogger.info('http', 'receive response', {method: type, route: safeRoute, status: res?.status ?? 'undefined'});
 
         if (res && (res.status===200 || res.status===204)) {
             const _res = res.status===200 ? await res.text() : undefined;
@@ -403,10 +422,17 @@ export class BaseAPI {
     }
 
     protected async download(route:string) {
-        if (this.identity===undefined) { return Promise.reject(); }
+        const safeRoute = sanitizeRouteForLog(route);
+        if (this.identity===undefined) {
+            outputLogger.warn('http', 'download skipped: missing identity', {method: 'GET', route: safeRoute});
+            return Promise.reject();
+        }
 
         let content: Buffer[] = [];
+        let part = 0;
         while(true) {
+            part += 1;
+            outputLogger.info('http', 'send download request', {method: 'GET', route: safeRoute, part});
             const res = await fetch(this.url+route, {
                 method: 'GET', redirect: 'manual', agent: this.agent,
                 headers: {
@@ -414,6 +440,7 @@ export class BaseAPI {
                     'Cookie': this.identity.cookies,
                 }
             });
+            outputLogger.info('http', 'receive download response', {method: 'GET', route: safeRoute, part, status: res.status});
             if (res.status===200) {
                 content.push(await res.buffer());
                 break;

@@ -10,6 +10,7 @@ import { EventBus } from '../utils/eventBus';
 import { SCMCollectionProvider } from '../scm/scmCollectionProvider';
 import { ExtendedBaseAPI, ProjectLinkedFileProvider, UrlLinkedFileProvider } from '../api/extendedBase';
 import { canonicalizeOverleafUri, normalizeOverleafQuery } from '../utils/overleafUri';
+import { fileChangeEventForLog, outputLogger, uriForLog } from '../utils/outputLogger';
 
 const __OUTPUTS_ID = `${ROOT_NAME}-outputs`;
 
@@ -367,11 +368,12 @@ export class VirtualFileSystem extends vscode.Disposable {
         this.socket.updateEventHandlers({
             onDisconnected: () => {
                 if (this.root===undefined) { return; } // bypass the first initialization
-                console.log("Disconnected");
+                outputLogger.warn('socket', 'remote filesystem disconnected', {server: this.serverName, projectId: this.projectId});
                 this.retryConnection += 1;
                 this.initializing = this.initializingPromise;
             },
             onConnectionAccepted: (publicId:string) => {
+                outputLogger.info('socket', 'remote filesystem connected', {server: this.serverName, projectId: this.projectId, publicId});
                 this.retryConnection = 0;
                 this.publicId = publicId;
             },
@@ -562,6 +564,7 @@ export class VirtualFileSystem extends vscode.Disposable {
 
     async createFile(uri: vscode.Uri, content:Uint8Array, overwrite?:boolean) {
         const {parentFolder, fileName, fileEntity} = await this._resolveUri(uri);
+        outputLogger.info('local-change', 'create file requested', {uri: uriForLog(uri), bytes: content.length, overwrite: overwrite ?? false});
         if (fileEntity && !overwrite) {
             throw vscode.FileSystemError.FileExists(uri);
         }
@@ -597,6 +600,7 @@ export class VirtualFileSystem extends vscode.Disposable {
         const {fileType, fileEntity} = await this._resolveUri(uri);
         if (fileType==='file' && fileEntity) {
             if ((fileEntity as FileRefEntity).linkedFileData===null) { return; }
+            outputLogger.info('local-change', 'refresh linked file requested', {uri: uriForLog(uri), entityId: fileEntity._id});
 
             vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
@@ -627,6 +631,7 @@ export class VirtualFileSystem extends vscode.Disposable {
     async createLinkedFile(uri: vscode.Uri) {
         const res = await this._resolveUri(uri);
         const parentFolder = res.fileType==='folder' ? res.fileEntity as FolderEntity : res.parentFolder;
+        outputLogger.info('local-change', 'create linked file requested', {uri: uriForLog(uri), parentFolderId: parentFolder._id});
 
         const supportedProviders = [
             vscode.l10n.t('From Another Project'),
@@ -726,6 +731,7 @@ export class VirtualFileSystem extends vscode.Disposable {
     }
 
     async writeFile(uri: vscode.Uri, content:Uint8Array, create:boolean, overwrite:boolean) {
+        outputLogger.info('local-change', 'write file requested', {uri: uriForLog(uri), bytes: content.length, create, overwrite});
         const {fileType, fileEntity} = await this._resolveUri(uri);
 
         // if non-exists --> create it
@@ -785,6 +791,7 @@ export class VirtualFileSystem extends vscode.Disposable {
                 })(),
             };
             this.isDirty = (update.op && update.op.length) ? true : false;
+            outputLogger.info('local-change', 'send document update', {uri: uriForLog(uri), docId: doc._id, version: update.v, opCount: update.op?.length ?? 0});
             await this.socket.applyOtUpdate(doc._id, update);
             doc.localCache = mergeRes;
             doc.remoteCache = mergeRes;
@@ -799,6 +806,7 @@ export class VirtualFileSystem extends vscode.Disposable {
 
     async mkdir(uri: vscode.Uri) {
         const {parentFolder, fileName} = await this._resolveUri(uri);
+        outputLogger.info('local-change', 'create directory requested', {uri: uriForLog(uri), parentFolderId: parentFolder._id});
         const [folderName, parentFolderId] = [fileName, parentFolder._id];
         const identity = await GlobalStateManager.authenticate(this.context, this.serverName);
         const res = await this.api.addFolder(identity, this.projectId, folderName, parentFolderId);
@@ -817,6 +825,7 @@ export class VirtualFileSystem extends vscode.Disposable {
 
     async remove(uri: vscode.Uri, recursive: boolean) {
         const {parentFolder, fileType, fileEntity} = await this._resolveUri(uri);
+        outputLogger.info('local-change', 'delete requested', {uri: uriForLog(uri), type: fileType, entityId: fileEntity?._id, recursive});
         if (fileType && fileEntity) {
             const identity = await GlobalStateManager.authenticate(this.context, this.serverName);
             const res = await this.api.deleteEntity(identity, this.projectId, fileType, fileEntity._id);
@@ -834,6 +843,7 @@ export class VirtualFileSystem extends vscode.Disposable {
     }
 
     async rename(oldUri: vscode.Uri, newUri: vscode.Uri, force: boolean) {
+        outputLogger.info('local-change', 'rename requested', {from: uriForLog(oldUri), to: uriForLog(newUri), force});
         const oldPath = await this._resolveUri(oldUri);
         const newPath = await this._resolveUri(newUri);
 
@@ -1255,6 +1265,9 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
     }
 
     notify(events :vscode.FileChangeEvent[]) {
+        outputLogger.info('vfs', 'emit file change events', {
+            events: events.map(fileChangeEventForLog).join(', '),
+        });
         this._emitter.fire(events);
     }
 
@@ -1263,6 +1276,7 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
     }
 
     watch(uri: vscode.Uri, options: { recursive: boolean; excludes: string[]; }): vscode.Disposable {
+        outputLogger.info('vfs', 'watch registered', {uri: uriForLog(uri), recursive: options.recursive});
         return new vscode.Disposable(() => {});
     }
 

@@ -19,6 +19,7 @@ import {
 } from '../consts';
 import { stringifyOverleafUri } from '../utils/overleafUri';
 import { formatUnknownError } from '../utils/errorMessage';
+import { outputLogger, uriForLog } from '../utils/outputLogger';
 
 const IGNORE_SETTING_KEY = 'ignore-patterns';
 
@@ -734,17 +735,20 @@ export class LocalReplicaSCMProvider extends BaseSCM {
     private bypassSync(action:SyncAction, type:SyncChangeType, relPath: string, content?: Uint8Array): boolean {
         // bypass ignore files
         if (this.matchIgnorePatterns(relPath)) {
+            outputLogger.info('local-replica', 'sync bypassed', {action, type, path: relPath, reason: 'ignore-pattern'});
             return true;
         }
         if (type==='delete' && this.shouldSuppressDeletePropagation(action, relPath)) {
+            outputLogger.info('local-replica', 'sync bypassed', {action, type, path: relPath, reason: 'suppressed-delete'});
             return true;
         }
         // synchronization propagation check
         if (!this.shouldPropagate(action, relPath, content)) {
+            outputLogger.info('local-replica', 'sync bypassed', {action, type, path: relPath, reason: 'unchanged-or-cached'});
             return true;
         }
         // otherwise, log the synchronization
-        console.log(`${new Date().toLocaleString()} [${action}] ${type} "${relPath}"`);
+        outputLogger.info('local-replica', 'sync propagated', {action, type, path: relPath});
         return false;
     }
 
@@ -872,21 +876,24 @@ export class LocalReplicaSCMProvider extends BaseSCM {
         pathParts.at(-1)==='' && pathParts.pop(); // remove the last empty string
         const relPath = ('/' + pathParts.join('/'));
         const localUri = this.localUri(relPath);
+        outputLogger.info('local-replica', 'remote watcher event', {type, path: relPath, uri: uriForLog(vfsUri)});
         await this.enqueueSync(() => this.applySync('pull', type, relPath, vfsUri, localUri));
     }
 
     private async syncToVFS(localUri: vscode.Uri, type: 'update'|'delete') {
         if (isLocalReplicaMetadataUri(localUri, this.baseUri)) {
+            outputLogger.info('local-replica', 'local watcher event bypassed', {type, uri: uriForLog(localUri), reason: 'metadata'});
             return;
         }
         if (!await this.hasLocalReplicaSettings()) {
-            console.warn(`Local replica settings missing under "${this.baseUri.toString()}"; local change was not propagated.`);
+            outputLogger.warn('local-replica', 'local change was not propagated', {type, uri: uriForLog(localUri), reason: 'missing-settings'});
             return;
         }
         // get relative path to baseUri
         const basePath = this.baseUri.path;
         const relPath = localUri.path.slice(basePath.length);
         const vfsUri = this.vfs.pathToUri(relPath);
+        outputLogger.info('local-replica', 'local watcher event', {type, path: relPath, uri: uriForLog(localUri)});
         await this.enqueueSync(() => this.applySync('push', type, relPath, localUri, vfsUri));
     }
 
@@ -900,6 +907,7 @@ export class LocalReplicaSCMProvider extends BaseSCM {
 
     private async initWatch() {
         await this.initializeLocalReplica();
+        outputLogger.info('local-replica', 'watchers initializing', {localRoot: uriForLog(this.baseUri), remoteRoot: uriForLog(this.vfs.origin)});
         this.vfsWatcher = vscode.workspace.createFileSystemWatcher(
             new vscode.RelativePattern( this.vfs.origin, '**/*' )
         );
